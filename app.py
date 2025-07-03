@@ -87,7 +87,8 @@ def connect_to_gsheet():
         worksheet = spreadsheet.worksheet("log")
         return worksheet
     except Exception as e:
-        st.error(f"Googleスプレッドシートへの接続に失敗しました: {e}")
+        st.error("Googleスプレッドシートへの接続に失敗しました。以下に詳細なエラー情報を表示します。")
+        st.exception(e) # ← st.errorからst.exceptionに変更
         return None
 
 # スプレッドシートに会話ログを追記する関数
