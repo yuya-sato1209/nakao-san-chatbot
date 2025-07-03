@@ -1,17 +1,17 @@
-import streamlit as st
-from langchain_community.chat_models import ChatOpenAI
-from langchain_community.document_loaders import TextLoader
-from langchain_community.vectorstores import FAISS
-from langchain_community.embeddings import OpenAIEmbeddings
-from langchain.chains import RetrievalQA
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain.prompts import PromptTemplate
-from dotenv import load_dotenv
+import streamlit as st # type: ignore
+from langchain_community.chat_models import ChatOpenAI # type: ignore
+from langchain_community.document_loaders import TextLoader # type: ignore
+from langchain_community.vectorstores import FAISS # type: ignore
+from langchain_community.embeddings import OpenAIEmbeddings # type: ignore
+from langchain.chains import RetrievalQA # type: ignore
+from langchain.text_splitter import RecursiveCharacterTextSplitter # type: ignore
+from langchain.prompts import PromptTemplate # type: ignore
+from dotenv import load_dotenv # type: ignore
 import os
-import gspread
-from google.oauth2.service_account import Credentials
+import gspread # type: ignore
+from google.oauth2.service_account import Credentials # type: ignore
 from datetime import datetime
-import pytz
+import pytz # type: ignore
 
 # --- Streamlit UI設定 ---
 st.set_page_config(page_title="中尾さんなりきりChatBot", layout="wide")
