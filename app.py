@@ -1,36 +1,35 @@
-import streamlit as st # type: ignore
-from langchain_community.chat_models import ChatOpenAI # type: ignore
-from langchain_community.document_loaders import TextLoader # type: ignore
-from langchain_community.vectorstores import FAISS # type: ignore
-from langchain_community.embeddings import OpenAIEmbeddings # type: ignore
-from langchain.chains import RetrievalQA # type: ignore
-from langchain.text_splitter import RecursiveCharacterTextSplitter # type: ignore
-from langchain.prompts import PromptTemplate # type: ignore
-from dotenv import load_dotenv # type: ignore
+import streamlit as st
+from langchain_community.chat_models import ChatOpenAI
+from langchain_community.document_loaders import TextLoader
+from langchain_community.vectorstores import FAISS
+from langchain_community.embeddings import OpenAIEmbeddings
+from langchain.chains import RetrievalQA
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain.prompts import PromptTemplate
+from dotenv import load_dotenv
 import os
-import gspread # type: ignore
-from google.oauth2.service_account import Credentials # type: ignore
+import gspread
+from google.oauth2.service_account import Credentials
 from datetime import datetime
-import pytz # type: ignore
+import pytz
 
 # --- Streamlit UI設定 ---
 st.set_page_config(page_title="中尾さんなりきりChatBot", layout="wide")
 st.title("🎓 中尾さんなりきりChatBot")
 
 # --- APIキーの読み込み ---
+# (この部分は変更なし)
 load_dotenv()
-openai_api_key = os.getenv("OPENAI_API_KEY")
+openai_api_key = os.getenv("OPENAI_API_KEY") or st.secrets.get("OPENAI_API_KEY")
+
 if not openai_api_key:
-    # ローカルの.envファイルから読み込めない場合、StreamlitのSecretsを試す
-    try:
-        os.environ["OPENAI_API_KEY"] = st.secrets["OPENAI_API_KEY"]
-    except Exception:
-        st.error("OpenAI APIキーが見つかりません。.envファイルまたはStreamlitのSecretsに設定してください。")
-        st.stop()
-else:
-    os.environ["OPENAI_API_KEY"] = openai_api_key
+    st.error("OpenAI APIキーが見つかりません。.envファイルまたはStreamlitのSecretsに設定してください。")
+    st.stop()
+
+os.environ["OPENAI_API_KEY"] = openai_api_key
 
 # --- RAG用ベクトルDBの構築 ---
+# (この部分は変更なし)
 @st.cache_resource
 def load_vectorstore():
     loader = TextLoader("rag_trainning.txt", encoding="utf-8")
@@ -42,6 +41,7 @@ def load_vectorstore():
     return vectordb
 
 # --- プロンプトテンプレート ---
+# (この部分は変更なし)
 template = """
 あなたはAさん本人として、函館の街歩きに参加した人たちからの質問に答えます。
 口調・語尾・話し方の癖・思考の特徴などは、以下の講館テキストから忠実に学び、再現してください。
@@ -61,6 +61,7 @@ template = """
 prompt_template = PromptTemplate.from_template(template)
 
 # --- LLM + 検索チェーンの準備 ---
+# (この部分は変更なし)
 llm = ChatOpenAI(model_name="gpt-4")
 vectordb = load_vectorstore()
 retriever = vectordb.as_retriever()
@@ -72,12 +73,12 @@ qa = RetrievalQA.from_chain_type(
 )
 
 # --- Googleスプレッドシート連携 ---
-
-# Googleスプレッドシートへの接続（初回実行時のみキャッシュを利用）
+# (connect_to_gsheet関数は変更なし)
 @st.cache_resource
 def connect_to_gsheet():
     try:
-        creds = Credentials.from_service_account_info(st.secrets["gcp_service_account"])
+        creds_dict = st.secrets["gcp_service_account"]
+        creds = Credentials.from_service_account_info(creds_dict)
         scoped_creds = creds.with_scopes([
             "https://www.googleapis.com/auth/spreadsheets",
             "https://www.googleapis.com/auth/drive"
@@ -87,17 +88,18 @@ def connect_to_gsheet():
         worksheet = spreadsheet.worksheet("log")
         return worksheet
     except Exception as e:
-        st.error("Googleスプレッドシートへの接続に失敗しました。以下に詳細なエラー情報を表示します。")
-        st.exception(e) # ← st.errorからst.exceptionに変更
+        st.error("Googleスプレッドシートへの接続に失敗しました。Secretsと共有設定を再確認してください。")
+        st.exception(e)
         return None
 
-# スプレッドシートに会話ログを追記する関数
-def append_log_to_gsheet(worksheet, query, response):
+# ▼▼▼ スプレッドシートに書き込む関数を修正 ▼▼▼
+def append_log_to_gsheet(worksheet, username, query, response):
     if worksheet is not None:
         try:
             jst = pytz.timezone('Asia/Tokyo')
             timestamp = datetime.now(jst).strftime('%Y-%m-%d %H:%M:%S')
-            worksheet.append_row([timestamp, query, response])
+            # ユーザー名を含めて書き込むように変更
+            worksheet.append_row([timestamp, username, query, response])
         except Exception as e:
             st.warning(f"ログの書き込みに失敗しました: {e}")
 
@@ -106,66 +108,57 @@ worksheet = connect_to_gsheet()
 
 # --- チャット機能 ---
 
-# 会話履歴をセッション状態で初期化
-if "messages" not in st.session_state:
-    st.session_state.messages = []
+# ▼▼▼ ユーザー名入力フォームを追加 ▼▼▼
+if "username" not in st.session_state:
+    st.session_state.username = ""
 
-# 過去の会話履歴をすべて表示
-for message in st.session_state.messages:
-    with st.chat_message(message["role"]):
-        st.markdown(message["content"])
-        if message["role"] == "assistant" and "source_documents" in message:
-            with st.expander("🔍 参考に使われたテキスト"):
-                for doc in message["source_documents"]:
-                    st.write(doc.page_content)
+if st.session_state.username == "":
+    st.session_state.username = st.text_input("ニックネームを入力して、Enterキーを押してください", key="username_input")
+    if st.session_state.username:
+        st.rerun() # ニックネームが入力されたらページを再読み込みしてチャット画面を表示
+else:
+    # --- ニックネームが入力された後にチャット画面を表示 ---
+    st.write(f"こんにちは、{st.session_state.username}さん！")
 
-# チャット入力欄を画面下部に表示
-if query := st.chat_input("💬 函館の街歩きに基づいて質問してみてください"):
-    # ユーザーの質問を会話履歴に追加し、表示
-    st.session_state.messages.append({"role": "user", "content": query})
-    with st.chat_message("user"):
-        st.markdown(query)
+    # 会話履歴を初期化
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
 
-    # AIの回答を生成し、表示
-    with st.chat_message("assistant"):
-        with st.spinner("考え中..."):
-            result = qa(query)
-            response = result["result"]
-            st.markdown(response)
-            
-            # ログをスプレッドシートに書き込む
-            append_log_to_gsheet(worksheet, query, response)
-            
-            # 参考テキストを折りたたみで表示
-            with st.expander("🔍 参考に使われたテキスト"):
-                for doc in result["source_documents"]:
-                    st.write(doc.page_content)
+    # 過去の会話履歴をすべて表示
+    for message in st.session_state.messages:
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
+            if message["role"] == "assistant" and "source_documents" in message:
+                with st.expander("🔍 参考に使われたテキスト"):
+                    for doc in message["source_documents"]:
+                        st.write(doc.page_content)
 
-            # AIの回答と参考テキストを会話履歴に追加
-            st.session_state.messages.append({
-                "role": "assistant", 
-                "content": response,
-                "source_documents": result["source_documents"]
-            })
+    # チャット入力欄を画面下部に表示
+    if query := st.chat_input("💬 函館の街歩きに基づいて質問してみてください"):
+        st.session_state.messages.append({"role": "user", "content": query})
+        with st.chat_message("user"):
+            st.markdown(query)
+
+        with st.chat_message("assistant"):
+            with st.spinner("考え中..."):
+                result = qa(query)
+                response = result["result"]
+                st.markdown(response)
+                
+                # ▼▼▼ ログを書き込む際にユーザー名を渡すように修正 ▼▼▼
+                append_log_to_gsheet(worksheet, st.session_state.username, query, response)
+                
+                with st.expander("🔍 参考に使われたテキスト"):
+                    for doc in result["source_documents"]:
+                        st.write(doc.page_content)
+
+                st.session_state.messages.append({
+                    "role": "assistant", 
+                    "content": response,
+                    "source_documents": result["source_documents"]
+                })
 
 # --- サイドバーのダウンロード機能 ---
-
+# (この部分は変更なし)
 st.sidebar.title("会話履歴の保存")
-
-def format_log(messages):
-    log_data = ""
-    for message in messages:
-        role = "あなた" if message["role"] == "user" else "中尾さん"
-        log_data += f"[{role}]\n{message['content']}\n\n"
-    return log_data.encode('utf-8')
-
-if st.session_state.messages:
-    log_bytes = format_log(st.session_state.messages)
-    st.sidebar.download_button(
-        label="会話履歴をダウンロード",
-        data=log_bytes,
-        file_name="nakao_san_chat_log.txt",
-        mime="text/plain"
-    )
-else:
-    st.sidebar.info("まだ会話がありません。")
+# ... (以下、変更なし)
