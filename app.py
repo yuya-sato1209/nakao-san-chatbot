@@ -18,7 +18,6 @@ st.set_page_config(page_title="ナカオさんの函館歴史探訪", layout="wi
 st.title("🎓 ナカオさんの函館歴史探訪")
 
 # --- APIキーの読み込み ---
-# (この部分は変更なし)
 load_dotenv()
 openai_api_key = os.getenv("OPENAI_API_KEY") or st.secrets.get("OPENAI_API_KEY")
 
@@ -29,7 +28,6 @@ if not openai_api_key:
 os.environ["OPENAI_API_KEY"] = openai_api_key
 
 # --- RAG用ベクトルDBの構築 ---
-# (この部分は変更なし)
 @st.cache_resource
 def load_vectorstore():
     loader = TextLoader("rag_trainning.txt", encoding="utf-8")
@@ -41,10 +39,15 @@ def load_vectorstore():
     return vectordb
 
 # --- プロンプトテンプレート ---
-# (この部分は変更なし)
 template = """
 あなたはAさん本人として、函館の街歩きに参加した人たちからの質問に答えます。
-口調・語尾・話し方の癖・思考の特徴などは、以下の講館テキストから忠実に学び、再現してください。
+口調・語尾・話し方の癖・思考の特徴などは、以下のテキストから忠実に学び、再現してください。
+
+--- ルール ---
+- 与えられた「参考情報」に書かれている内容だけを元に、忠実に回答してください。
+- あなた自身の知識や、参考情報にない内容は絶対に追加しないでください。
+- 参考情報に答えがない場合は、無理に回答を創作せず、「その情報については分かりません」と正直に答えてください。
+--- ルールここまで ---
 
 以下に、回答の参考になるAさんの発言を提示します。
 --- 参考情報 ---
@@ -61,8 +64,7 @@ template = """
 prompt_template = PromptTemplate.from_template(template)
 
 # --- LLM + 検索チェーンの準備 ---
-# (この部分は変更なし)
-llm = ChatOpenAI(model_name="gpt-4")
+llm = ChatOpenAI(model_name="gpt-4", temperature=0.1)
 vectordb = load_vectorstore()
 retriever = vectordb.as_retriever()
 qa = RetrievalQA.from_chain_type(
@@ -73,7 +75,6 @@ qa = RetrievalQA.from_chain_type(
 )
 
 # --- Googleスプレッドシート連携 ---
-# (connect_to_gsheet関数は変更なし)
 @st.cache_resource
 def connect_to_gsheet():
     try:
@@ -159,6 +160,4 @@ else:
                 })
 
 # --- サイドバーのダウンロード機能 ---
-# (この部分は変更なし)
 st.sidebar.title("会話履歴の保存")
-# ... (以下、変更なし)
