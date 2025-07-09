@@ -14,8 +14,8 @@ from datetime import datetime
 import pytz
 
 # --- Streamlit UI設定 ---
-st.set_page_config(page_title="中尾さんなりきりChatBot", layout="wide")
-st.title("🎓 中尾さんなりきりChatBot")
+st.set_page_config(page_title="ナカオさんの函館歴史探訪", layout="wide")
+st.title("🎓 ナカオさんの函館歴史探訪")
 
 # --- APIキーの読み込み ---
 # (この部分は変更なし)
