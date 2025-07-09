@@ -59,7 +59,7 @@ prompt_template = PromptTemplate.from_template(template)
 
 # --- LLM + 検索チェーンの準備 ---
 # ▼▼▼ モデル名を最新の "gpt-4o" に修正 ▼▼▼
-llm = ChatOpenAI(model_name="gpt-4o", temperature=0.1)
+llm = ChatOpenAI(model_name="gpt-4o")
 vectordb = load_vectorstore()
 retriever = vectordb.as_retriever()
 qa = RetrievalQA.from_chain_type(
