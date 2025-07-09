@@ -64,7 +64,8 @@ template = """
 prompt_template = PromptTemplate.from_template(template)
 
 # --- LLM + 検索チェーンの準備 ---
-llm = ChatOpenAI(model_name="gpt-4.1", temperature=0.1)
+# ▼▼▼ モデル名を最新の "gpt-4o" に修正 ▼▼▼
+llm = ChatOpenAI(model_name="gpt-4o", temperature=0.1)
 vectordb = load_vectorstore()
 retriever = vectordb.as_retriever()
 qa = RetrievalQA.from_chain_type(
@@ -93,7 +94,7 @@ def connect_to_gsheet():
         st.exception(e)
         return None
 
-# ▼▼▼ スプレッドシートに書き込む関数を修正 ▼▼▼
+# スプレッドシートに書き込む関数
 def append_log_to_gsheet(worksheet, username, query, response):
     if worksheet is not None:
         try:
@@ -109,7 +110,7 @@ worksheet = connect_to_gsheet()
 
 # --- チャット機能 ---
 
-# ▼▼▼ ユーザー名入力フォームを追加 ▼▼▼
+# ユーザー名入力フォーム
 if "username" not in st.session_state:
     st.session_state.username = ""
 
@@ -118,7 +119,7 @@ if st.session_state.username == "":
     if st.session_state.username:
         st.rerun() # ニックネームが入力されたらページを再読み込みしてチャット画面を表示
 else:
-    # --- ニックネームが入力された後にチャット画面を表示 ---
+    # ニックネームが入力された後にチャット画面を表示
     st.write(f"こんにちは、{st.session_state.username}さん！")
 
     # 会話履歴を初期化
@@ -146,7 +147,7 @@ else:
                 response = result["result"]
                 st.markdown(response)
                 
-                # ▼▼▼ ログを書き込む際にユーザー名を渡すように修正 ▼▼▼
+                # ログを書き込む際にユーザー名を渡す
                 append_log_to_gsheet(worksheet, st.session_state.username, query, response)
                 
                 with st.expander("🔍 参考に使われたテキスト"):
@@ -161,3 +162,4 @@ else:
 
 # --- サイドバーのダウンロード機能 ---
 st.sidebar.title("会話履歴の保存")
+# (以下、変更なし)
