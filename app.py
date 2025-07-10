@@ -63,7 +63,7 @@ template = """
 prompt_template = PromptTemplate.from_template(template)
 
 # --- LLM + 検索チェーンの準備 ---
-llm = ChatOpenAI(model_name="gpt-4o")
+llm = ChatOpenAI(model_name="gpt-4.1")
 vectordb = load_vectorstore()
 retriever = vectordb.as_retriever()
 
