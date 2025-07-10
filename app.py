@@ -3,7 +3,6 @@ from langchain_community.chat_models import ChatOpenAI
 from langchain_community.document_loaders import TextLoader
 from langchain_community.vectorstores import FAISS
 from langchain_community.embeddings import OpenAIEmbeddings
-# ▼▼▼ 会話用のチェーンをインポート ▼▼▼
 from langchain.chains import ConversationalRetrievalChain
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.prompts import PromptTemplate
@@ -39,43 +38,49 @@ def load_vectorstore():
     vectordb = FAISS.from_documents(docs, embedding=embedding)
     return vectordb
 
-# --- プロンプトテンプレート ---
-# この部分は、フォローアップの質問を理解するために少し柔軟性を持たせた方が良い場合がありますが、
-# まずはそのまま使用し、必要に応じて調整します。
+# --- ▼▼▼ プロンプトテンプレートを大幅に強化 ▼▼▼ ---
 template = """
-あなたはAさん本人として、函館の街歩きに参加した人たちからの質問に答えます。
-口調・語尾・話し方の癖・思考の特徴などは、以下の講館テキストから忠実に学び、再現してください。
+あなたは、函館の歴史を案内するベテランガイドのAさんです。
+あなたの役割は、街歩きに参加した人たちからの質問に、まるでその場で語りかけるように、親しみやすく、かつ知識の深さを感じさせる口調で答えることです。
 
---- ルール ---
-- 事実に基づいて、忠実に回答してください。
-- rag_trainning.txtのデータが本当に正しいか確認してから回答に利用してください
+--- 話し方の特徴 ---
+- 語尾には「〜ですな」「〜というわけです」「〜なんですよ」などを使い、柔らかく断定的な話し方をしてください。
+- 自分の考えや解釈を話すときは、「わたくしは見ています」「最近わたくしが言っているのは〜」といった一人称を自然に使ってください。
+- 時には「信じるか信じないかは、皆さんにお任せします」といった、含みのある言い方で歴史の裏話を語ってください。
+- 全体として、単なる事実の羅列ではなく、物語を語るような、聞き手を引き込む話し方を心がけてください。
 
---- ルールここまで ---
+--- 厳格なルール ---
+- 回答は、必ず以下に提示される「参考情報」に書かれている内容のみを基に作成してください。
+- 参考情報に書かれていない事柄や、あなたの個人的な知識は、絶対に回答に含めてはいけません。
+- もし参考情報に質問の答えが見つからない場合は、無理に回答を創作せず、正直に「その件については、私の知っている範囲では分かりかねます。」と答えてください。
 
-以下に、回答の参考になるAさんの発言を提示します。
 --- 参考情報 ---
 {context}
 --- 参考情報ここまで ---
 
-以下の質問に、Aさんとして答えてください。
---- 質問 ---
-{question}
---- 質問ここまで ---
+--- 会話の履歴 ---
+{chat_history}
+--- 会話の履歴ここまで ---
 
-回答はAさんとして、まるで“今この場であなたが函館の街歩きに参加した人に語っているかのように”自然な話し言葉で、句読点や語尾なども実際の口調に近づけてください。
+上記の情報をすべて踏まえた上で、以下の「ユーザーの質問」にAさんとして答えてください。
+
+--- ユーザーの質問 ---
+{question}
+--- ユーザーの質問ここまで ---
 """
 prompt_template = PromptTemplate.from_template(template)
 
 # --- LLM + 検索チェーンの準備 ---
-# ▼▼▼ チェーンをConversationalRetrievalChainに変更 ▼▼▼
 llm = ChatOpenAI(model_name="gpt-4o")
 vectordb = load_vectorstore()
 retriever = vectordb.as_retriever()
-# 会話の文脈を考慮するチェーンを定義
+
+# ▼▼▼ 会話チェーンに、強化したプロンプトを正しく設定 ▼▼▼
 qa = ConversationalRetrievalChain.from_llm(
     llm=llm,
     retriever=retriever,
-    return_source_documents=True
+    return_source_documents=True,
+    combine_docs_chain_kwargs={"prompt": prompt_template} # この行が重要！
 )
 
 # --- Googleスプレッドシート連携 ---
@@ -142,21 +147,16 @@ else:
 
         with st.chat_message("assistant"):
             with st.spinner("考え中..."):
-                # ▼▼▼ 会話履歴をAIに渡すための処理を追加 ▼▼▼
                 chat_history = []
-                # 直近の会話履歴を適切な形式に変換する
-                for message in st.session_state.messages[:-1]: # 最後の質問（今入力されたもの）は除く
+                for message in st.session_state.messages[:-1]:
                     if message["role"] == "user":
                         chat_history.append((message["content"], ""))
                     elif message["role"] == "assistant":
-                        # 最後のユーザーの質問に対応するアシスタントの回答を追加
                         if chat_history:
                             last_question, _ = chat_history[-1]
                             chat_history[-1] = (last_question, message["content"])
 
-                # AIに質問と会話履歴を渡す
                 result = qa({"question": query, "chat_history": chat_history})
-                # 応答のキーが 'result' から 'answer' に変わる
                 response = result["answer"]
                 st.markdown(response)
                 
