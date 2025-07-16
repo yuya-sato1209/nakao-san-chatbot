@@ -1,12 +1,13 @@
 import streamlit as st
 from langchain_community.chat_models import ChatOpenAI
+from langchain_community.document_loaders import TextLoader
 from langchain_community.vectorstores import FAISS
 from langchain_community.embeddings import OpenAIEmbeddings
 from langchain.chains import ConversationalRetrievalChain
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.prompts import PromptTemplate
-from langchain_core.documents import Document # Documentを直接作成するために追加
 from dotenv import load_dotenv
+from langchain_core.documents import Document # Documentを直接作成するために追加
 import os
 import gspread
 from google.oauth2.service_account import Credentials
@@ -28,26 +29,24 @@ if not openai_api_key:
 
 os.environ["OPENAI_API_KEY"] = openai_api_key
 
-# --- RAG用ベクトルDBの構築部分を修正 ---
+# --- RAG用ベクトルDBの構築 ---
 @st.cache_resource
 def load_vectorstore():
     documents_with_metadata = []
     # TextLoaderの代わりにjsonlファイルを一行ずつ読み込む
     with open("rag_data.jsonl", "r", encoding="utf-8") as f:
         for line in f:
-            # ▼▼▼ 空行を無視する処理を追加 ▼▼▼
-            if line.strip():
-                data = json.loads(line)
-                # 読み込んだデータからDocumentオブジェクトを作成
-                doc = Document(
-                    page_content=data["text"],
-                    metadata={
-                        "source_video": data.get("source_video", "不明なソース"),
-                        "url": data.get("url", "#"),
-                        "start_time": data.get("start_time", 0)
-                    }
-                )
-                documents_with_metadata.append(doc)
+            data = json.loads(line)
+            # 読み込んだデータからDocumentオブジェクトを作成
+            doc = Document(
+                page_content=data["text"],
+                metadata={
+                    "source_video": data.get("source_video", "不明なソース"),
+                    "url": data.get("url", "#"),
+                    "start_time": data.get("start_time", 0)
+                }
+            )
+            documents_with_metadata.append(doc)
 
     splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
     docs = splitter.split_documents(documents_with_metadata)
@@ -55,31 +54,42 @@ def load_vectorstore():
     vectordb = FAISS.from_documents(docs, embedding=embedding)
     return vectordb
 
-# --- プロンプトテンプレート ---
+
+# --- ▼▼▼ プロンプトテンプレートを大幅に強化 ▼▼▼ ---
 template = """
 あなたは、函館の歴史を案内するベテランガイドのAさんです。
 あなたの役割は、街歩きに参加した人たちからの質問に、まるでその場で語りかけるように、親しみやすく、かつ知識の深さを感じさせる口調で答えることです。
 
 
+
+
 --- 参考情報 ---
 {context}
+--- 参考情報ここまで ---
+
 --- 会話の履歴 ---
 {chat_history}
+--- 会話の履歴ここまで ---
+
+上記の情報をすべて踏まえた上で、以下の「ユーザーの質問」にAさんとして答えてください。
+
 --- ユーザーの質問 ---
 {question}
+--- ユーザーの質問ここまで ---
 """
 prompt_template = PromptTemplate.from_template(template)
 
 # --- LLM + 検索チェーンの準備 ---
-llm = ChatOpenAI(model_name="gpt-4o")
+llm = ChatOpenAI(model_name="gpt-4.1")
 vectordb = load_vectorstore()
 retriever = vectordb.as_retriever()
 
+# ▼▼▼ 会話チェーンに、強化したプロンプトを正しく設定 ▼▼▼
 qa = ConversationalRetrievalChain.from_llm(
     llm=llm,
     retriever=retriever,
     return_source_documents=True,
-    combine_docs_chain_kwargs={"prompt": prompt_template}
+    combine_docs_chain_kwargs={"prompt": prompt_template} # この行が重要！
 )
 
 # --- Googleスプレッドシート連携 ---
@@ -129,7 +139,7 @@ else:
     if "messages" not in st.session_state:
         st.session_state.messages = []
 
-    # 過去の会話履歴の表示部分を修正
+    # 過去の会話履歴を表示
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
@@ -142,6 +152,8 @@ else:
                         timestamped_url = f"{base_url}&t={start_time}s"
                         st.write(f"**動画:** [{video_title}（{start_time}秒〜）]({timestamped_url})")
                         st.write(f"> {doc.page_content}")
+
+
 
     # チャット入力
     if query := st.chat_input("💬 函館の街歩きに基づいて質問してみてください"):
@@ -166,7 +178,6 @@ else:
                 
                 append_log_to_gsheet(worksheet, st.session_state.username, query, response)
                 
-                # 参考テキストの表示部分を修正
                 with st.expander("🔍 参考に使われたテキスト"):
                     for doc in result["source_documents"]:
                         video_title = doc.metadata.get("source_video", "不明なソース")
