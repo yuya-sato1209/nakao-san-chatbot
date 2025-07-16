@@ -7,13 +7,11 @@ from langchain.chains import ConversationalRetrievalChain
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.prompts import PromptTemplate
 from dotenv import load_dotenv
-from langchain_core.documents import Document # Documentを直接作成するために追加
 import os
 import gspread
 from google.oauth2.service_account import Credentials
 from datetime import datetime
 import pytz
-import json # JSONLファイルを読み込むために追加
 
 # --- Streamlit UI設定 ---
 st.set_page_config(page_title="ナカオさんの函館歴史探訪", layout="wide")
@@ -32,28 +30,13 @@ os.environ["OPENAI_API_KEY"] = openai_api_key
 # --- RAG用ベクトルDBの構築 ---
 @st.cache_resource
 def load_vectorstore():
-    documents_with_metadata = []
-    # TextLoaderの代わりにjsonlファイルを一行ずつ読み込む
-    with open("rag_data.jsonl", "r", encoding="utf-8") as f:
-        for line in f:
-            data = json.loads(line)
-            # 読み込んだデータからDocumentオブジェクトを作成
-            doc = Document(
-                page_content=data["text"],
-                metadata={
-                    "source_video": data.get("source_video", "不明なソース"),
-                    "url": data.get("url", "#"),
-                    "start_time": data.get("start_time", 0)
-                }
-            )
-            documents_with_metadata.append(doc)
-
+    loader = TextLoader("rag_trainning.txt", encoding="utf-8")
+    documents = loader.load()
     splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
-    docs = splitter.split_documents(documents_with_metadata)
+    docs = splitter.split_documents(documents)
     embedding = OpenAIEmbeddings()
     vectordb = FAISS.from_documents(docs, embedding=embedding)
     return vectordb
-
 
 # --- ▼▼▼ プロンプトテンプレートを大幅に強化 ▼▼▼ ---
 template = """
@@ -146,14 +129,7 @@ else:
             if message["role"] == "assistant" and "source_documents" in message:
                 with st.expander("🔍 参考に使われたテキスト"):
                     for doc in message["source_documents"]:
-                        video_title = doc.metadata.get("source_video", "不明なソース")
-                        base_url = doc.metadata.get("url", "#")
-                        start_time = doc.metadata.get("start_time", 0)
-                        timestamped_url = f"{base_url}&t={start_time}s"
-                        st.write(f"**動画:** [{video_title}（{start_time}秒〜）]({timestamped_url})")
-                        st.write(f"> {doc.page_content}")
-
-
+                        st.write(doc.page_content)
 
     # チャット入力
     if query := st.chat_input("💬 函館の街歩きに基づいて質問してみてください"):
@@ -180,13 +156,7 @@ else:
                 
                 with st.expander("🔍 参考に使われたテキスト"):
                     for doc in result["source_documents"]:
-                        video_title = doc.metadata.get("source_video", "不明なソース")
-                        base_url = doc.metadata.get("url", "#")
-                        start_time = doc.metadata.get("start_time", 0)
-                        # YouTubeのタイムスタンプ付きURLを生成
-                        timestamped_url = f"{base_url}&t={start_time}s"
-                        st.write(f"**動画:** [{video_title}（{start_time}秒〜）]({timestamped_url})")
-                        st.write(f"> {doc.page_content}")
+                        st.write(doc.page_content)
 
                 st.session_state.messages.append({
                     "role": "assistant", 
