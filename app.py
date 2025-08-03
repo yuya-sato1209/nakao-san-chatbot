@@ -1,17 +1,18 @@
 import streamlit as st
 from langchain_community.chat_models import ChatOpenAI
-from langchain_community.document_loaders import TextLoader
 from langchain_community.vectorstores import FAISS
 from langchain_community.embeddings import OpenAIEmbeddings
 from langchain.chains import ConversationalRetrievalChain
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.prompts import PromptTemplate
+from langchain_core.documents import Document
 from dotenv import load_dotenv
 import os
 import gspread
 from google.oauth2.service_account import Credentials
 from datetime import datetime
 import pytz
+import json
 
 # --- Streamlit UI設定 ---
 st.set_page_config(page_title="ナカオさんの函館歴史探訪", layout="wide")
@@ -27,56 +28,72 @@ if not openai_api_key:
 
 os.environ["OPENAI_API_KEY"] = openai_api_key
 
-# --- RAG用ベクトルDBの構築 ---
+# --- データ読み込み関数 ---
+# 全てのデータを辞書のリストとして読み込む（キーワード検索用）
+@st.cache_data
+def load_raw_data():
+    all_data = []
+    with open("rag_data.jsonl", "r", encoding="utf-8") as f:
+        for line in f:
+            if line.strip():
+                all_data.append(json.loads(line))
+    return all_data
+
+# ベクトルDBを構築する（RAG検索用）
 @st.cache_resource
-def load_vectorstore():
-    loader = TextLoader("rag_trainning.txt", encoding="utf-8")
-    documents = loader.load()
+def load_vectorstore(_raw_data):
+    documents_with_metadata = []
+    for data in _raw_data:
+        doc = Document(
+            page_content=data["text"],
+            metadata={
+                "source_video": data.get("source_video", "不明なソース"),
+                "url": data.get("url", "#")
+            }
+        )
+        documents_with_metadata.append(doc)
+
     splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
-    docs = splitter.split_documents(documents)
+    docs = splitter.split_documents(documents_with_metadata)
     embedding = OpenAIEmbeddings()
     vectordb = FAISS.from_documents(docs, embedding=embedding)
     return vectordb
 
-# --- ▼▼▼ プロンプトテンプレートを大幅に強化 ▼▼▼ ---
+# --- プロンプトテンプレート ---
 template = """
 あなたは、函館の歴史を案内するベテランガイドのAさんです。
 あなたの役割は、街歩きに参加した人たちからの質問に、まるでその場で語りかけるように、親しみやすく、かつ知識の深さを感じさせる口調で答えることです。
 
-
+--- 話し方の特徴 ---
+- 語尾には「〜ですな」「〜というわけです」「〜なんですよ」などを使い、柔らかく断定的な話し方をしてください。
+- 自分の考えや解釈を話すときは、「わたくしは見ています」「最近わたくしが言っているのは〜」といった一人称を自然に使ってください。
+- 時には「信じるか信じないかは、皆さんにお任せします」といった、含みのある言い方で歴史の裏話を語ってください。
+- 全体として、単なる事実の羅列ではなく、物語を語るような、聞き手を引き込む話し方を心がけてください。
 
 
 --- 参考情報 ---
 {context}
---- 参考情報ここまで ---
-
 --- 会話の履歴 ---
 {chat_history}
---- 会話の履歴ここまで ---
-
-上記の情報をすべて踏まえた上で、以下の「ユーザーの質問」にAさんとして答えてください。
-
 --- ユーザーの質問 ---
 {question}
---- ユーザーの質問ここまで ---
 """
 prompt_template = PromptTemplate.from_template(template)
 
 # --- LLM + 検索チェーンの準備 ---
-llm = ChatOpenAI(model_name="gpt-4.1")
-vectordb = load_vectorstore()
+llm = ChatOpenAI(model_name="gpt-4o")
+raw_data = load_raw_data()
+vectordb = load_vectorstore(raw_data)
 retriever = vectordb.as_retriever()
 
-# ▼▼▼ 会話チェーンに、強化したプロンプトを正しく設定 ▼▼▼
 qa = ConversationalRetrievalChain.from_llm(
     llm=llm,
     retriever=retriever,
     return_source_documents=True,
-    combine_docs_chain_kwargs={"prompt": prompt_template} # この行が重要！
+    combine_docs_chain_kwargs={"prompt": prompt_template}
 )
 
 # --- Googleスプレッドシート連携 ---
-# (この部分は変更なし)
 @st.cache_resource
 def connect_to_gsheet():
     try:
@@ -106,9 +123,32 @@ def append_log_to_gsheet(worksheet, username, query, response):
 
 worksheet = connect_to_gsheet()
 
-# --- チャット機能 ---
+# --- ヘルパー関数 ---
+def extract_keywords(text):
+    prompt = f"以下の文章から、函館の歴史に関連する重要なキーワード（地名、人名、出来事など）を最大3つまで抽出し、カンマ区切りでリストアップしてください。\n\n文章:\n{text}\n\nキーワード:"
+    try:
+        keyword_llm = ChatOpenAI(model_name="gpt-4o", temperature=0)
+        response = keyword_llm.invoke(prompt)
+        keywords = [kw.strip() for kw in response.content.split(',') if kw.strip()]
+        return keywords
+    except Exception:
+        return []
 
-# ユーザー名入力フォーム
+def find_videos_by_keywords(keywords, all_data):
+    found_videos = {}
+    if not keywords:
+        return []
+    for keyword in keywords:
+        for item in all_data:
+            if keyword.lower() in item["text"].lower():
+                if item["url"] not in found_videos:
+                    found_videos[item["url"]] = {
+                        "title": item.get("source_video", "不明なソース"),
+                        "url": item.get("url", "#")
+                    }
+    return list(found_videos.values())
+
+# --- チャット機能 ---
 if "username" not in st.session_state:
     st.session_state.username = ""
 
@@ -118,20 +158,26 @@ if st.session_state.username == "":
         st.rerun()
 else:
     st.write(f"こんにちは、{st.session_state.username}さん！")
-
     if "messages" not in st.session_state:
         st.session_state.messages = []
 
-    # 過去の会話履歴を表示
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
-            if message["role"] == "assistant" and "source_documents" in message:
-                with st.expander("🔍 参考に使われたテキスト"):
-                    for doc in message["source_documents"]:
-                        st.write(doc.page_content)
+            if message["role"] == "assistant":
+                if "source_documents" in message and message["source_documents"]:
+                    with st.expander("🔍 回答の根拠となったテキスト"):
+                        for doc in message["source_documents"]:
+                            video_title = doc.metadata.get("source_video", "不明なソース")
+                            video_url = doc.metadata.get("url", "#")
+                            st.write(f"**動画:** [{video_title}]({video_url})")
+                            st.write(f"> {doc.page_content}")
+                if "related_videos" in message and message["related_videos"]:
+                    with st.expander("🎬 関連動画"):
+                        for video in message["related_videos"]:
+                            video_url = video['url']
+                            st.write(f"**動画:** [{video['title']}]({video_url})")
 
-    # チャット入力
     if query := st.chat_input("💬 函館の街歩きに基づいて質問してみてください"):
         st.session_state.messages.append({"role": "user", "content": query})
         with st.chat_message("user"):
@@ -140,26 +186,39 @@ else:
         with st.chat_message("assistant"):
             with st.spinner("考え中..."):
                 chat_history = []
-                for message in st.session_state.messages[:-1]:
-                    if message["role"] == "user":
-                        chat_history.append((message["content"], ""))
-                    elif message["role"] == "assistant":
+                for msg in st.session_state.messages[:-1]:
+                    if msg["role"] == "user":
+                        chat_history.append((msg["content"], ""))
+                    elif msg["role"] == "assistant":
                         if chat_history:
-                            last_question, _ = chat_history[-1]
-                            chat_history[-1] = (last_question, message["content"])
+                            last_q, _ = chat_history[-1]
+                            chat_history[-1] = (last_q, msg["content"])
 
                 result = qa({"question": query, "chat_history": chat_history})
                 response = result["answer"]
+                keywords = extract_keywords(response)
+                related_videos = find_videos_by_keywords(keywords, raw_data)
+                
                 st.markdown(response)
                 
                 append_log_to_gsheet(worksheet, st.session_state.username, query, response)
                 
-                with st.expander("🔍 参考に使われたテキスト"):
+                with st.expander("🔍 回答の根拠となったテキスト"):
                     for doc in result["source_documents"]:
-                        st.write(doc.page_content)
+                        video_title = doc.metadata.get("source_video", "不明なソース")
+                        video_url = doc.metadata.get("url", "#")
+                        st.write(f"**動画:** [{video_title}]({video_url})")
+                        st.write(f"> {doc.page_content}")
+
+                if related_videos:
+                    with st.expander("🎬 関連動画"):
+                        for video in related_videos:
+                            video_url = video['url']
+                            st.write(f"**動画:** [{video['title']}]({video_url})")
 
                 st.session_state.messages.append({
                     "role": "assistant", 
                     "content": response,
-                    "source_documents": result["source_documents"]
+                    "source_documents": result["source_documents"],
+                    "related_videos": related_videos
                 })
