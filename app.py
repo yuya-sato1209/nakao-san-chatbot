@@ -63,6 +63,7 @@ def load_vectorstore(_raw_data):
     return vectordb
 
 # --- プロンプトテンプレート ---
+# ▼▼▼ 厳格なルールを再追加 ▼▼▼
 template = """
 あなたは、函館の歴史を案内するベテランガイドのAさんです。
 あなたの役割は、街歩きに参加した人たちからの質問に、まるでその場で語りかけるように、親しみやすく、かつ知識の深さを感じさせる口調で答えることです。
@@ -84,11 +85,12 @@ template = """
 prompt_template = PromptTemplate.from_template(template)
 
 # --- LLM + 検索チェーンの準備 ---
-llm = ChatOpenAI(model_name="gpt-4.1")
+# ▼▼▼ モデル名を正しい "gpt-4o" に修正 ▼▼▼
+llm = ChatOpenAI(model_name="gpt-4o")
 raw_data = load_raw_data()
 vectordb = load_vectorstore(raw_data)
 
-# ▼▼▼ 検索の精度を厳しくする設定を追加 ▼▼▼
+# ▼▼▼ 検索の精度を適切な値に修正 ▼▼▼
 retriever = vectordb.as_retriever(
     search_type="similarity_score_threshold",
     search_kwargs={'score_threshold': 0.1, 'k': 3}
@@ -135,7 +137,7 @@ worksheet = connect_to_gsheet()
 def extract_keywords(text):
     prompt = f"以下の文章から、函館の歴史に関連する重要なキーワード（地名、人名、出来事など）を最大3つまで抽出し、カンマ区切りでリストアップしてください。\n\n文章:\n{text}\n\nキーワード:"
     try:
-        keyword_llm = ChatOpenAI(model_name="gpt-4o", temperature=0)
+        keyword_llm = ChatOpenAI(model_name="gpt-4.1", temperature=0)
         response = keyword_llm.invoke(prompt)
         keywords = [kw.strip() for kw in response.content.split(',') if kw.strip()]
         return keywords
