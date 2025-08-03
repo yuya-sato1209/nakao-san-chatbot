@@ -36,7 +36,10 @@ def load_raw_data():
     with open("rag_data.jsonl", "r", encoding="utf-8") as f:
         for line in f:
             if line.strip():
-                all_data.append(json.loads(line))
+                try:
+                    all_data.append(json.loads(line))
+                except json.JSONDecodeError:
+                    st.warning(f"rag_data.jsonlに不正な形式の行があったため、スキップされました。")
     return all_data
 
 # ベクトルDBを構築する（RAG検索用）
@@ -60,37 +63,36 @@ def load_vectorstore(_raw_data):
     return vectordb
 
 # --- プロンプトテンプレート ---
-
-# --- ▼▼▼ プロンプトテンプレートを大幅に強化 ▼▼▼ ---
 template = """
 あなたは、函館の歴史を案内するベテランガイドのAさんです。
 あなたの役割は、街歩きに参加した人たちからの質問に、まるでその場で語りかけるように、親しみやすく、かつ知識の深さを感じさせる口調で答えることです。
 
-
+--- 話し方の特徴 ---
+- 語尾には「〜ですな」「〜というわけです」「〜なんですよ」などを使い、柔らかく断定的な話し方をしてください。
+- 自分の考えや解釈を話すときは、「わたくは見ています」「最近わたくしが言っているのは〜」といった一人称を自然に使ってください。
+- 時には「信じるか信じないかは、皆さんにお任せします」といった、含みのある言い方で歴史の裏話を語ってください。
+- 全体として、単なる事実の羅列ではなく、物語を語るような、聞き手を引き込む話し方を心がけてください。
 
 
 --- 参考情報 ---
 {context}
---- 参考情報ここまで ---
-
 --- 会話の履歴 ---
 {chat_history}
---- 会話の履歴ここまで ---
-
-上記の情報をすべて踏まえた上で、以下の「ユーザーの質問」にAさんとして答えてください。
-
 --- ユーザーの質問 ---
 {question}
---- ユーザーの質問ここまで ---
 """
-
 prompt_template = PromptTemplate.from_template(template)
 
 # --- LLM + 検索チェーンの準備 ---
-llm = ChatOpenAI(model_name="gpt-4.1")
+llm = ChatOpenAI(model_name="gpt-4o")
 raw_data = load_raw_data()
 vectordb = load_vectorstore(raw_data)
-retriever = vectordb.as_retriever()
+
+# ▼▼▼ 検索の精度を厳しくする設定を追加 ▼▼▼
+retriever = vectordb.as_retriever(
+    search_type="similarity_score_threshold",
+    search_kwargs={'score_threshold': 0.7, 'k': 3}
+)
 
 qa = ConversationalRetrievalChain.from_llm(
     llm=llm,
