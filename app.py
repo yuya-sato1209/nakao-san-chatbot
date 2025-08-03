@@ -217,7 +217,7 @@ else:
                     for doc in result["source_documents"]:
                         video_title = doc.metadata.get("source_video", "不明なソース")
                         video_url = doc.metadata.get("url", "#")
-                        st.write(f"**動画:** [{video_title}]({video_url})")
+                        #//st.write(f"**動画:** [{video_title}]({video_url})")
                         st.write(f"> {doc.page_content}")
 
                 if related_videos:
