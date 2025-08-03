@@ -93,7 +93,7 @@ vectordb = load_vectorstore(raw_data)
 # ▼▼▼ 検索の精度を適切な値に修正 ▼▼▼
 retriever = vectordb.as_retriever(
     search_type="similarity_score_threshold",
-    search_kwargs={'score_threshold': 0.1, 'k': 3}
+    search_kwargs={'score_threshold': 0.9, 'k': 3}
 )
 
 qa = ConversationalRetrievalChain.from_llm(
