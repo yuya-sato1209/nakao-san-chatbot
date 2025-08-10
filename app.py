@@ -80,12 +80,12 @@ template = """
 prompt_template = PromptTemplate.from_template(template)
 
 # --- LLM + 検索チェーンの準備 ---
-llm = ChatOpenAI(model_name="gpt-4.1")
+llm = ChatOpenAI(model_name="gpt-5")
 raw_data = load_raw_data()
 vectordb = load_vectorstore(raw_data)
 retriever = vectordb.as_retriever(
     search_type="similarity_score_threshold",
-    search_kwargs={'score_threshold': 0.7, 'k': 2}
+    search_kwargs={'score_threshold': 0.2, 'k': 2}
 )
 
 qa = ConversationalRetrievalChain.from_llm(
