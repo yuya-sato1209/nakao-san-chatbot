@@ -85,7 +85,7 @@ raw_data = load_raw_data()
 vectordb = load_vectorstore(raw_data)
 retriever = vectordb.as_retriever(
     search_type="similarity_score_threshold",
-    search_kwargs={'score_threshold': 0.2, 'k': 2}
+    search_kwargs={'score_threshold': 0.1, 'k': 3}
 )
 
 qa = ConversationalRetrievalChain.from_llm(
@@ -130,7 +130,7 @@ worksheet = connect_to_gsheet()
 def extract_keywords(text):
     prompt = f"以下の文章から、函館の歴史に関連する重要なキーワード（地名、人名、出来事など）を最大3つまで抽出し、カンマ区切りでリストアップしてください。\n\n文章:\n{text}\n\nキーワード:"
     try:
-        keyword_llm = ChatOpenAI(model_name="gpt-4.1", temperature=0)
+        keyword_llm = ChatOpenAI(model_name="gpt-5", temperature=0)
         response = keyword_llm.invoke(prompt)
         keywords = [kw.strip() for kw in response.content.split(',') if kw.strip()]
         return keywords
@@ -210,8 +210,8 @@ else:
                     for doc in result["source_documents"]:
                         video_title = doc.metadata.get("source_video", "不明なソース")
                         video_url = doc.metadata.get("url", "#")
-                        st.write(f"**動画:** [{video_title}]({video_url})")
-                        st.write(f"> {doc.page_content}")
+                
+                        st.write("{doc.page_content}")
 
                 if related_videos:
                     with st.expander("🎬 関連動画"):
