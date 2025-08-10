@@ -14,9 +14,13 @@ from datetime import datetime
 import pytz
 import json
 
+# --- 定数定義 ---
+# ▼▼▼ ここにあなたのスプレッドシートIDを設定してください ▼▼▼
+SPREADSHEET_ID = "1z5kbcz-84A7--ziiicVy3TgcToi4qOmvisEbqad0daM" 
+
 # --- Streamlit UI設定 ---
 st.set_page_config(page_title="ナカオさんの函館歴史探訪", layout="wide")
-st.title("🎓 ナカオさんの函館歴史探訪")
+st.title("� ナカオさんの函館歴史探訪")
 
 # --- APIキーの読み込み ---
 load_dotenv()
@@ -29,7 +33,6 @@ if not openai_api_key:
 os.environ["OPENAI_API_KEY"] = openai_api_key
 
 # --- データ読み込み関数 ---
-# 全てのデータを辞書のリストとして読み込む（キーワード検索用）
 @st.cache_data
 def load_raw_data():
     all_data = []
@@ -42,7 +45,6 @@ def load_raw_data():
                     st.warning(f"rag_data.jsonlに不正な形式の行があったため、スキップされました。")
     return all_data
 
-# ベクトルDBを構築する（RAG検索用）
 @st.cache_resource
 def load_vectorstore(_raw_data):
     documents_with_metadata = []
@@ -63,11 +65,9 @@ def load_vectorstore(_raw_data):
     return vectordb
 
 # --- プロンプトテンプレート ---
-# ▼▼▼ 厳格なルールを再追加 ▼▼▼
 template = """
 あなたは、函館の歴史を案内するベテランガイドのAさんです。
 あなたの役割は、街歩きに参加した人たちからの質問に、まるでその場で語りかけるように、親しみやすく、かつ知識の深さを感じさせる口調で答えることです。
-
 
 
 --- 参考情報 ---
@@ -80,15 +80,12 @@ template = """
 prompt_template = PromptTemplate.from_template(template)
 
 # --- LLM + 検索チェーンの準備 ---
-# ▼▼▼ モデル名を正しい "gpt-4o" に修正 ▼▼▼
-llm = ChatOpenAI(model_name="gpt-4.1")
+llm = ChatOpenAI(model_name="gpt-5")
 raw_data = load_raw_data()
 vectordb = load_vectorstore(raw_data)
-
-# ▼▼▼ 検索の精度を適切な値に修正 ▼▼▼
 retriever = vectordb.as_retriever(
     search_type="similarity_score_threshold",
-    search_kwargs={'score_threshold': 0.8, 'k': 3}
+    search_kwargs={'score_threshold': 0.7, 'k': 2}
 )
 
 qa = ConversationalRetrievalChain.from_llm(
@@ -104,12 +101,13 @@ def connect_to_gsheet():
     try:
         creds_dict = st.secrets["gcp_service_account"]
         creds = Credentials.from_service_account_info(creds_dict)
+        # ▼▼▼ スコープからDriveを削除 ▼▼▼
         scoped_creds = creds.with_scopes([
-            "https://www.googleapis.com/auth/spreadsheets",
-            "https://www.googleapis.com/auth/drive"
+            "https://www.googleapis.com/auth/spreadsheets"
         ])
         client = gspread.authorize(scoped_creds)
-        spreadsheet = client.open("中尾さんChatBot会話ログ")
+        # ▼▼▼ IDで直接スプレッドシートを開くように変更 ▼▼▼
+        spreadsheet = client.open_by_key(SPREADSHEET_ID)
         worksheet = spreadsheet.worksheet("log")
         return worksheet
     except Exception as e:
@@ -132,7 +130,7 @@ worksheet = connect_to_gsheet()
 def extract_keywords(text):
     prompt = f"以下の文章から、函館の歴史に関連する重要なキーワード（地名、人名、出来事など）を最大3つまで抽出し、カンマ区切りでリストアップしてください。\n\n文章:\n{text}\n\nキーワード:"
     try:
-        keyword_llm = ChatOpenAI(model_name="gpt-4.1", temperature=0)
+        keyword_llm = ChatOpenAI(model_name="gpt-5", temperature=0)
         response = keyword_llm.invoke(prompt)
         keywords = [kw.strip() for kw in response.content.split(',') if kw.strip()]
         return keywords
@@ -212,8 +210,8 @@ else:
                     for doc in result["source_documents"]:
                         video_title = doc.metadata.get("source_video", "不明なソース")
                         video_url = doc.metadata.get("url", "#")
-                        #//st.write(f"**動画:** [{video_title}]({video_url})")
-                        st.write(doc.page_content)
+                        st.write(f"**動画:** [{video_title}]({video_url})")
+                        st.write(f"> {doc.page_content}")
 
                 if related_videos:
                     with st.expander("🎬 関連動画"):
