@@ -172,7 +172,7 @@ else:
                 
                 append_log_to_gsheet(worksheet, st.session_state.username, query, response)
                 
-                with st.expander("🔍 回答の根拠となったテキスト"):
+                with st.expander("🔍 回答の根拠となったテキスト・動画"):
                     for doc in result["source_documents"]:
                         video_title = doc.metadata.get("source_video", "不明なソース")
                         video_url = doc.metadata.get("url", "#")
