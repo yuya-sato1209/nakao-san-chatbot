@@ -20,7 +20,7 @@ SPREADSHEET_ID = "1xeuewRd2GvnLDpDYFT5IJ5u19PUhBOuffTfCyWmQIzA"
 
 # --- Streamlit UI設定 ---
 st.set_page_config(page_title="ナカオさんの函館歴史探訪", layout="wide")
-st.title("ナカオさんの函館歴史探訪")
+st.title("🎓 ナカオさんの函館歴史探訪")
 
 # --- APIキーの読み込み ---
 load_dotenv()
@@ -80,7 +80,7 @@ template = """
 prompt_template = PromptTemplate.from_template(template)
 
 # --- LLM + 検索チェーンの準備 ---
-llm = ChatOpenAI(model_name="gpt-4.1")
+llm = ChatOpenAI(model_name="gpt-5")
 raw_data = load_raw_data()
 vectordb = load_vectorstore(raw_data)
 retriever = vectordb.as_retriever(
@@ -101,12 +101,10 @@ def connect_to_gsheet():
     try:
         creds_dict = st.secrets["gcp_service_account"]
         creds = Credentials.from_service_account_info(creds_dict)
-        # ▼▼▼ スコープからDriveを削除 ▼▼▼
         scoped_creds = creds.with_scopes([
             "https://www.googleapis.com/auth/spreadsheets"
         ])
         client = gspread.authorize(scoped_creds)
-        # ▼▼▼ IDで直接スプレッドシートを開くように変更 ▼▼▼
         spreadsheet = client.open_by_key(SPREADSHEET_ID)
         worksheet = spreadsheet.worksheet("log")
         return worksheet
@@ -125,31 +123,6 @@ def append_log_to_gsheet(worksheet, username, query, response):
             st.warning(f"ログの書き込みに失敗しました: {e}")
 
 worksheet = connect_to_gsheet()
-
-# --- ヘルパー関数 ---
-def extract_keywords(text):
-    prompt = f"以下の文章から、函館の歴史に関連する重要なキーワード（地名、人名、出来事など）を最大3つまで抽出し、カンマ区切りでリストアップしてください。\n\n文章:\n{text}\n\nキーワード:"
-    try:
-        keyword_llm = ChatOpenAI(model_name="gpt-4.1", temperature=0)
-        response = keyword_llm.invoke(prompt)
-        keywords = [kw.strip() for kw in response.content.split(',') if kw.strip()]
-        return keywords
-    except Exception:
-        return []
-
-def find_videos_by_keywords(keywords, all_data):
-    found_videos = {}
-    if not keywords:
-        return []
-    for keyword in keywords:
-        for item in all_data:
-            if keyword.lower() in item["text"].lower():
-                if item["url"] not in found_videos:
-                    found_videos[item["url"]] = {
-                        "title": item.get("source_video", "不明なソース"),
-                        "url": item.get("url", "#")
-                    }
-    return list(found_videos.values())
 
 # --- チャット機能 ---
 if "username" not in st.session_state:
@@ -175,11 +148,6 @@ else:
                             video_url = doc.metadata.get("url", "#")
                             st.write(f"**動画:** [{video_title}]({video_url})")
                             st.write(f"> {doc.page_content}")
-                if "related_videos" in message and message["related_videos"]:
-                    with st.expander("🎬 関連動画"):
-                        for video in message["related_videos"]:
-                            video_url = video['url']
-                            st.write(f"**動画:** [{video['title']}]({video_url})")
 
     if query := st.chat_input("💬 函館の街歩きに基づいて質問してみてください"):
         st.session_state.messages.append({"role": "user", "content": query})
@@ -199,8 +167,6 @@ else:
 
                 result = qa({"question": query, "chat_history": chat_history})
                 response = result["answer"]
-                keywords = extract_keywords(response)
-                related_videos = find_videos_by_keywords(keywords, raw_data)
                 
                 st.markdown(response)
                 
@@ -211,15 +177,9 @@ else:
                         video_title = doc.metadata.get("source_video", "不明なソース")
                         video_url = doc.metadata.get("url", "#")
                         st.write(doc.page_content)
-                if related_videos:
-                    with st.expander("🎬 関連動画"):
-                        for video in related_videos:
-                            video_url = video['url']
-                            st.write(f"**動画:** [{video['title']}]({video_url})")
 
                 st.session_state.messages.append({
                     "role": "assistant", 
                     "content": response,
-                    "source_documents": result["source_documents"],
-                    "related_videos": related_videos
+                    "source_documents": result["source_documents"]
                 })
