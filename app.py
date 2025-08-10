@@ -16,11 +16,11 @@ import json
 
 # --- 定数定義 ---
 # ▼▼▼ ここにあなたのスプレッドシートIDを設定してください ▼▼▼
-SPREADSHEET_ID = "1z5kbcz-84A7--ziiicVy3TgcToi4qOmvisEbqad0daM" 
+SPREADSHEET_ID = "1xeuewRd2GvnLDpDYFT5IJ5u19PUhBOuffTfCyWmQIzA" 
 
 # --- Streamlit UI設定 ---
 st.set_page_config(page_title="ナカオさんの函館歴史探訪", layout="wide")
-st.title("� ナカオさんの函館歴史探訪")
+st.title("ナカオさんの函館歴史探訪")
 
 # --- APIキーの読み込み ---
 load_dotenv()
