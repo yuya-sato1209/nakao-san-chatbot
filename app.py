@@ -15,6 +15,7 @@ import pytz
 import json
 
 # --- 定数定義 ---
+# ▼▼▼ ここにあなたのスプレッドシートIDを設定してください ▼▼▼
 SPREADSHEET_ID = "1xeuewRd2GvnLDpDYFT5IJ5u19PUhBOuffTfCyWmQIzA" 
 
 # --- Streamlit UI設定 ---
@@ -44,7 +45,6 @@ def load_raw_data():
                     st.warning(f"rag_data.jsonlに不正な形式の行があったため、スキップされました。")
     return all_data
 
-# ▼▼▼ ベクトルDB構築時に、写真のURLもメタデータに含めるように修正 ▼▼▼
 @st.cache_resource
 def load_vectorstore(_raw_data):
     documents_with_metadata = []
@@ -53,8 +53,7 @@ def load_vectorstore(_raw_data):
             page_content=data["text"],
             metadata={
                 "source_video": data.get("source_video", "不明なソース"),
-                "url": data.get("url", "#"),
-                "photo_url": data.get("photo_url", "#") # 写真のURLを追加
+                "url": data.get("url", "#")
             }
         )
         documents_with_metadata.append(doc)
@@ -69,6 +68,7 @@ def load_vectorstore(_raw_data):
 template = """
 あなたは、函館の歴史を案内するベテランガイドのAさんです。
 あなたの役割は、街歩きに参加した人たちからの質問に、まるでその場で語りかけるように、親しみやすく、かつ知識の深さを感じさせる口調で答えることです。
+
 
 --- 参考情報 ---
 {context}
@@ -137,7 +137,6 @@ else:
     if "messages" not in st.session_state:
         st.session_state.messages = []
 
-    # ▼▼▼ 過去の会話履歴の表示部分に、写真表示機能を追加 ▼▼▼
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
@@ -145,10 +144,6 @@ else:
                 if "source_documents" in message and message["source_documents"]:
                     with st.expander("🔍 回答の根拠となったテキスト"):
                         for doc in message["source_documents"]:
-                            photo_url = doc.metadata.get("photo_url", "#")
-                            if photo_url and photo_url != "#":
-                                st.image(photo_url) # 写真を表示
-                            
                             video_title = doc.metadata.get("source_video", "不明なソース")
                             video_url = doc.metadata.get("url", "#")
                             st.write(f"**動画:** [{video_title}]({video_url})")
@@ -177,17 +172,12 @@ else:
                 
                 append_log_to_gsheet(worksheet, st.session_state.username, query, response)
                 
-                # ▼▼▼ 回答の根拠表示に、写真表示機能を追加 ▼▼▼
-                with st.expander("🔍 回答の根拠となったテキスト"):
+                with st.expander("🔍 回答の根拠となったテキスト・動画"):
                     for doc in result["source_documents"]:
-                        photo_url = doc.metadata.get("photo_url", "#")
-                        if photo_url and photo_url != "#":
-                            st.image(photo_url) # 写真を表示
-                        
                         video_title = doc.metadata.get("source_video", "不明なソース")
                         video_url = doc.metadata.get("url", "#")
+                        st.write(doc.page_content)
                         st.write(f"**動画:** [{video_title}]({video_url})")
-                        st.write(f"> {doc.page_content}")
 
                 st.session_state.messages.append({
                     "role": "assistant", 
