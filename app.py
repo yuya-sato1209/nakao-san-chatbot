@@ -146,7 +146,7 @@ else:
                         for doc in message["source_documents"]:
                             video_title = doc.metadata.get("source_video", "不明なソース")
                             video_url = doc.metadata.get("url", "#")
-                            st.write(f"**動画:** [{video_title}]({video_url})")
+                            st.write(f"**参照元:** [{video_title}]({video_url})")
                             st.write(f"> {doc.page_content}")
 
     if query := st.chat_input("💬 函館の街歩きに基づいて質問してみてください"):
@@ -172,7 +172,7 @@ else:
                 
                 append_log_to_gsheet(worksheet, st.session_state.username, query, response)
                 
-                with st.expander("🔍 回答の根拠となったテキスト・動画"):
+                with st.expander("🔍 回答の根拠となったテキスト"):
                     for doc in result["source_documents"]:
                         video_title = doc.metadata.get("source_video", "不明なソース")
                         video_url = doc.metadata.get("url", "#")
