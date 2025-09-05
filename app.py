@@ -177,7 +177,7 @@ else:
                         video_title = doc.metadata.get("source_video", "不明なソース")
                         video_url = doc.metadata.get("url", "#")
                         st.write(doc.page_content)
-                        st.write(f"**動画:** [{video_title}]({video_url})")
+                        st.write(f"**参照元:** [{video_title}]({video_url})")
 
                 st.session_state.messages.append({
                     "role": "assistant", 
