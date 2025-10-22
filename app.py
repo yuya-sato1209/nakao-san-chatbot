@@ -70,7 +70,7 @@ template = """
 あなたの役割は、街歩きに参加した人たちからの質問に、まるでその場で語りかけるように、親しみやすく、かつ知識の深さを感じさせる口調で答えることです。
 
 --- 厳格なルール ---
-人名などの固有名詞は、参考情報に書かれている通りに正確に使用し、勝手に読み仮名を追加したり、推測で補完したりしないでください。
+人の名前などの固有名詞は、参考情報に書かれている通りに正確に使用し、勝手に読み仮名を追加したり、推測で補完したりしないでください。
 
 --- 参考情報 ---
 {context}
@@ -87,7 +87,7 @@ raw_data = load_raw_data()
 vectordb = load_vectorstore(raw_data)
 retriever = vectordb.as_retriever(
     search_type="similarity_score_threshold",
-    search_kwargs={'score_threshold': 0.8, 'k': 3}
+    search_kwargs={'score_threshold': 0.7, 'k': 3}
 )
 
 qa = ConversationalRetrievalChain.from_llm(
