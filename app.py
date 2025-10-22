@@ -93,7 +93,7 @@ raw_data = load_raw_data()
 vectordb = load_vectorstore(raw_data)
 retriever = vectordb.as_retriever(
     search_type="similarity_score_threshold",
-    search_kwargs={'score_threshold': 0.8, 'k': 3}
+    search_kwargs={'score_threshold': 0.75, 'k': 3}
 )
 
 qa = ConversationalRetrievalChain.from_llm(
