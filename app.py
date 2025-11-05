@@ -5,7 +5,9 @@ from langchain_community.embeddings import OpenAIEmbeddings
 from langchain.chains import ConversationalRetrievalChain
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.prompts import PromptTemplate
-from langchain.chains.qa_with_sources import load_qa_with_sources_chain
+#from langchain.chains.qa_with_sources import load_qa_with_sources_chain
+from langchain.chains.combine_documents import create_stuff_documents_chain
+
 from langchain_core.documents import Document
 from dotenv import load_dotenv
 import os
@@ -98,7 +100,8 @@ retriever = vectordb.as_retriever(
     search_kwargs={'k': 5}  # より多くの関連文を拾う
 )
 
-combine_chain = load_qa_with_sources_chain(llm, chain_type="stuff", prompt=prompt_template)
+# combine_chain = load_qa_with_sources_chain(llm, chain_type="stuff", prompt=prompt_template)
+combine_chain = create_stuff_documents_chain(llm=llm, prompt=prompt_template)
 
 qa = ConversationalRetrievalChain(
     retriever=retriever,
