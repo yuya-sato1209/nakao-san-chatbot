@@ -111,7 +111,7 @@ prompt_template = PromptTemplate.from_template(template)
 # --- LLM + 検索チェーンの準備 ---
 # ▼▼▼ 修正点 3: モデル名を "gpt-4.1" (存在しない) から "gpt-4o" (最新) に修正 ▼▼▼
 # これが「プロンプト連携不全」の真の原因である可能性が高い
-llm = ChatOpenAI(model_name="gpt-4.1") 
+llm = ChatOpenAI(model_name="gpt-5-turbo") 
 raw_data = load_raw_data()
 vectordb = load_vectorstore(raw_data)
 
@@ -120,7 +120,7 @@ vectordb = load_vectorstore(raw_data)
 # (0.8 -> 0.6 に下げることで、より広い範囲のドキュメントを許可する)
 retriever = vectordb.as_retriever(
     search_type="similarity_score_threshold",
-    search_kwargs={'score_threshold': 0.6, 'k': 5} # 0.8から0.6に変更, kは元の3を維持
+    search_kwargs={'score_threshold': 0.6, 'k': 3} # 0.8から0.6に変更, kは元の3を維持
 )
 
 qa = ConversationalRetrievalChain.from_llm(
