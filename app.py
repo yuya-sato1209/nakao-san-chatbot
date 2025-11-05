@@ -111,7 +111,7 @@ prompt_template = PromptTemplate.from_template(template)
 # --- LLM + 検索チェーンの準備 ---
 # ▼▼▼ 修正点 3: モデル名を "gpt-4.1" (存在しない) から "gpt-4o" (最新) に修正 ▼▼▼
 # これが「プロンプト連携不全」の真の原因である可能性が高い
-llm = ChatOpenAI(model_name="gpt-5") 
+llm = ChatOpenAI(model_name="gpt-4.1") 
 raw_data = load_raw_data()
 vectordb = load_vectorstore(raw_data)
 
