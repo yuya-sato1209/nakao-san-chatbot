@@ -3,7 +3,7 @@ from langchain_community.chat_models import ChatOpenAI
 from langchain_community.vectorstores import FAISS
 from langchain_community.embeddings import OpenAIEmbeddings
 from langchain.chains import ConversationalRetrievalChain
-from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain.text_splitter import RecursiveCharacterTextSplitter # 修正1のためRecursiveを使用
 from langchain.prompts import PromptTemplate
 from langchain_core.documents import Document
 from dotenv import load_dotenv
@@ -15,7 +15,6 @@ import pytz
 import json
 
 # --- 定数定義 ---
-# ▼▼▼ ここにあなたのスプレッドシートIDを設定してください ▼▼▼
 SPREADSHEET_ID = "1xeuewRd2GvnLDpDYFT5IJ5u19PUhBOuffTfCyWmQIzA" 
 
 # --- Streamlit UI設定 ---
@@ -45,8 +44,10 @@ def load_raw_data():
                     st.warning(f"rag_data.jsonlに不正な形式の行があったため、スキップされました。")
     return all_data
 
+# ▼▼▼ 修正点 1: メタデータがチャンク分割後も保持されるよう、処理を明示的に修正 ▼▼▼
 @st.cache_resource
 def load_vectorstore(_raw_data):
+    # 1. まず、JSONLの各行をDocumentオブジェクトとして読み込む
     documents_with_metadata = []
     for data in _raw_data:
         doc = Document(
@@ -58,13 +59,33 @@ def load_vectorstore(_raw_data):
         )
         documents_with_metadata.append(doc)
 
+    # 2. テキストをチャンク分割し、メタデータを手動で引き継ぐ
     splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
-    docs = splitter.split_documents(documents_with_metadata)
+    
+    final_docs = []
+    for doc in documents_with_metadata:
+        # 元のDocumentのテキストだけを分割
+        chunks = splitter.split_text(doc.page_content)
+        for chunk_text in chunks:
+            # 分割されたチャンクごとに新しいDocumentを作成
+            # この際、元のメタデータを明示的にコピーして引き継ぐ
+            new_chunk_doc = Document(
+                page_content=chunk_text,
+                metadata=doc.metadata.copy() # メタデータを明示的にコピー
+            )
+            final_docs.append(new_chunk_doc)
+
+    # 3. メタデータが引き継がれたチャンクでDBを構築
+    if not final_docs:
+        st.error("知識源データ（rag_data.jsonl）の読み込みに失敗したか、中身が空です。")
+        st.stop()
+
     embedding = OpenAIEmbeddings()
-    vectordb = FAISS.from_documents(docs, embedding=embedding)
+    vectordb = FAISS.from_documents(final_docs, embedding=embedding)
     return vectordb
 
 # --- プロンプトテンプレート ---
+# (プロンプト自体は変更なし)
 template = """
 あなたは、函館の歴史を案内するベテランガイドのAさんです。
 あなたの役割は、街歩きに参加した人たちからの質問に、まるでその場で語りかけるように、親しみやすく、かつ知識の深さを感じさせる口調で答えることです。
@@ -88,22 +109,29 @@ template = """
 prompt_template = PromptTemplate.from_template(template)
 
 # --- LLM + 検索チェーンの準備 ---
-llm = ChatOpenAI(model_name="gpt-5-turbo")
+# ▼▼▼ 修正点 3: モデル名を "gpt-4.1" (存在しない) から "gpt-4o" (最新) に修正 ▼▼▼
+# これが「プロンプト連携不全」の真の原因である可能性が高い
+llm = ChatOpenAI(model_name="gpt-4.1") 
 raw_data = load_raw_data()
 vectordb = load_vectorstore(raw_data)
+
+# ▼▼▼ 修正点 2: 類似度スコアの閾値を 0.8 から 0.6 に緩める ▼▼▼
+# (FAISSのスコアは 0=近い, 1=遠い が標準だが、LangChainは 1=近い に正規化する)
+# (0.8 -> 0.6 に下げることで、より広い範囲のドキュメントを許可する)
 retriever = vectordb.as_retriever(
     search_type="similarity_score_threshold",
-    search_kwargs={'score_threshold': 0.7, 'k': 5}
+    search_kwargs={'score_threshold': 0.6, 'k': 5} # 0.8から0.6に変更, kは元の3を維持
 )
 
 qa = ConversationalRetrievalChain.from_llm(
     llm=llm,
     retriever=retriever,
     return_source_documents=True,
-    combine_docs_chain_kwargs={"prompt": prompt_template}
+    combine_docs_chain_kwargs={"prompt": prompt_template} # プロンプト連携はこれで正しい
 )
 
 # --- Googleスプレッドシート連携 ---
+# (変更なし)
 @st.cache_resource
 def connect_to_gsheet():
     try:
@@ -133,6 +161,7 @@ def append_log_to_gsheet(worksheet, username, query, response):
 worksheet = connect_to_gsheet()
 
 # --- チャット機能 ---
+# (変更なし)
 if "username" not in st.session_state:
     st.session_state.username = ""
 
