@@ -3,11 +3,9 @@ from langchain_community.chat_models import ChatOpenAI
 from langchain_community.vectorstores import FAISS
 from langchain_community.embeddings import OpenAIEmbeddings
 from langchain.chains import ConversationalRetrievalChain
+from langchain.chains.qa_with_sources import load_qa_with_sources_chain
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.prompts import PromptTemplate
-#from langchain.chains.qa_with_sources import load_qa_with_sources_chain
-from langchain.chains.combine_documents import create_stuff_documents_chain
-
 from langchain_core.documents import Document
 from dotenv import load_dotenv
 import os
@@ -17,24 +15,24 @@ from datetime import datetime
 import pytz
 import json
 
-# --- 定数定義 ---
+# --- 定数 ---
 SPREADSHEET_ID = "1xeuewRd2GvnLDpDYFT5IJ5u19PUhBOuffTfCyWmQIzA"
 
-# --- Streamlit UI設定 ---
+# --- Streamlit 設定 ---
 st.set_page_config(page_title="ナカオさんの函館歴史探訪", layout="wide")
-st.title("🎓 ナカオさんの函館歴史探訪")
+st.title("🎓 ナカオさんの函館歴史探訪（GPT-5対応版）")
 
-# --- APIキーの読み込み ---
+# --- APIキー読み込み ---
 load_dotenv()
 openai_api_key = os.getenv("OPENAI_API_KEY") or st.secrets.get("OPENAI_API_KEY")
 
 if not openai_api_key:
-    st.error("OpenAI APIキーが見つかりません。.envファイルまたはStreamlitのSecretsに設定してください。")
+    st.error("OpenAI APIキーが見つかりません。.envまたはSecretsを確認してください。")
     st.stop()
 
 os.environ["OPENAI_API_KEY"] = openai_api_key
 
-# --- データ読み込み関数 ---
+# --- データ読み込み ---
 @st.cache_data
 def load_raw_data():
     all_data = []
@@ -44,29 +42,33 @@ def load_raw_data():
                 try:
                     all_data.append(json.loads(line))
                 except json.JSONDecodeError:
-                    st.warning("rag_data.jsonl に不正な行がありました（スキップされました）。")
+                    st.warning("不正な形式の行をスキップしました。")
     return all_data
 
 @st.cache_resource
 def load_vectorstore(_raw_data):
-    splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
-    split_docs = []
-
+    documents_with_metadata = []
     for data in _raw_data:
-        base_doc = Document(
+        doc = Document(
             page_content=data["text"],
             metadata={
-                "source_video": data.get("source_video", "メタデータ未登録"),
+                "source_video": data.get("source_video", "不明なソース"),
                 "url": data.get("url", "#")
             }
         )
-        chunks = splitter.split_documents([base_doc])
+        documents_with_metadata.append(doc)
+
+    splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
+    docs = []
+    for doc in documents_with_metadata:
+        chunks = splitter.split_documents([doc])
+        # ✅ チャンク分割後にメタデータを維持
         for c in chunks:
-            c.metadata = base_doc.metadata  # メタデータを明示的に引き継ぐ
-            split_docs.append(c)
+            c.metadata = doc.metadata
+            docs.append(c)
 
     embedding = OpenAIEmbeddings()
-    vectordb = FAISS.from_documents(split_docs, embedding=embedding)
+    vectordb = FAISS.from_documents(docs, embedding=embedding)
     return vectordb
 
 # --- プロンプトテンプレート ---
@@ -76,32 +78,35 @@ template = """
 親しみやすく、かつ知識の深さを感じさせる口調で答えることです。
 
 --- 回答生成の手順 ---
-1. 以下の「参考情報」を読み、文字起こし特有の誤字・冗長表現を自然な日本語に頭の中で修正してください。
-2. 参考情報と会話履歴を踏まえ、ユーザーの質問に答えてください。
-3. 固有名詞は参考情報の通り正確に使用し、推測で補完しないでください。
+1. 以下の参考情報を読み、文字起こしの誤字や言い回しを頭の中で自然に修正してください。
+2. 修正した情報と会話履歴を踏まえて、ユーザーの質問に答えてください。
+3. 固有名詞は変更せず、読み仮名や推測補完は禁止。
 
 --- 参考情報 ---
 {context}
---- 会話の履歴 ---
+--- 会話履歴 ---
 {chat_history}
 --- ユーザーの質問 ---
 {question}
 """
 prompt_template = PromptTemplate.from_template(template)
 
-# --- LLM + 検索チェーンの準備 ---
-llm = ChatOpenAI(model_name="gpt-5-turbo")
-
+# --- LLMとQAチェーン構築 ---
+llm = ChatOpenAI(model_name="gpt-5-turbo", temperature=0.4)
 
 raw_data = load_raw_data()
 vectordb = load_vectorstore(raw_data)
 retriever = vectordb.as_retriever(
-    search_type="similarity",
-    search_kwargs={'k': 5}  # より多くの関連文を拾う
+    search_type="similarity_score_threshold",
+    search_kwargs={'score_threshold': 0.6, 'k': 3}  # ✅ 類似度閾値を緩和
 )
 
-# combine_chain = load_qa_with_sources_chain(llm, chain_type="stuff", prompt=prompt_template)
-combine_chain = create_stuff_documents_chain(llm=llm, prompt=prompt_template)
+# ✅ プロンプト連携に旧API load_qa_with_sources_chain を使用
+combine_chain = load_qa_with_sources_chain(
+    llm=llm,
+    chain_type="stuff",
+    prompt=prompt_template
+)
 
 qa = ConversationalRetrievalChain(
     retriever=retriever,
@@ -134,7 +139,7 @@ def append_log_to_gsheet(worksheet, username, query, response):
             timestamp = datetime.now(jst).strftime('%Y-%m-%d %H:%M:%S')
             worksheet.append_row([timestamp, username, query, response])
         except Exception as e:
-            st.warning(f"ログの書き込みに失敗しました: {e}")
+            st.warning(f"ログ書き込みに失敗: {e}")
 
 worksheet = connect_to_gsheet()
 
@@ -143,7 +148,7 @@ if "username" not in st.session_state:
     st.session_state.username = ""
 
 if st.session_state.username == "":
-    st.session_state.username = st.text_input("ニックネームを入力してEnterを押してください", key="username_input")
+    st.session_state.username = st.text_input("ニックネームを入力してください", key="username_input")
     if st.session_state.username:
         st.rerun()
 else:
@@ -157,12 +162,12 @@ else:
             if message["role"] == "assistant" and "source_documents" in message:
                 with st.expander("🔍 回答の根拠となったテキスト"):
                     for doc in message["source_documents"]:
-                        src = doc.metadata.get("source_video", "メタデータ未登録")
-                        url = doc.metadata.get("url", "#")
-                        st.markdown(f"**参照元:** [{src}]({url})")
+                        video_title = doc.metadata.get("source_video", "不明なソース")
+                        video_url = doc.metadata.get("url", "#")
+                        st.write(f"**参照元:** [{video_title}]({video_url})")
                         st.write(f"> {doc.page_content}")
 
-    if query := st.chat_input("💬 函館の街歩きに関する質問をどうぞ！"):
+    if query := st.chat_input("💬 函館について質問してみてください"):
         st.session_state.messages.append({"role": "user", "content": query})
         with st.chat_message("user"):
             st.markdown(query)
@@ -185,9 +190,9 @@ else:
 
                 with st.expander("🔍 回答の根拠となったテキスト"):
                     for doc in result["source_documents"]:
-                        src = doc.metadata.get("source_video", "メタデータ未登録")
-                        url = doc.metadata.get("url", "#")
-                        st.markdown(f"**参照元:** [{src}]({url})")
+                        video_title = doc.metadata.get("source_video", "不明なソース")
+                        video_url = doc.metadata.get("url", "#")
+                        st.write(f"**参照元:** [{video_title}]({video_url})")
                         st.write(f"> {doc.page_content}")
 
                 st.session_state.messages.append({
