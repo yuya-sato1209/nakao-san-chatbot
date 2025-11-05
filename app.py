@@ -5,6 +5,7 @@ from langchain_community.embeddings import OpenAIEmbeddings
 from langchain.chains import ConversationalRetrievalChain
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.prompts import PromptTemplate
+from langchain.chains.qa_with_sources import load_qa_with_sources_chain
 from langchain_core.documents import Document
 from dotenv import load_dotenv
 import os
@@ -15,8 +16,7 @@ import pytz
 import json
 
 # --- 定数定義 ---
-# ▼▼▼ ここにあなたのスプレッドシートIDを設定してください ▼▼▼
-SPREADSHEET_ID = "1xeuewRd2GvnLDpDYFT5IJ5u19PUhBOuffTfCyWmQIzA" 
+SPREADSHEET_ID = "1xeuewRd2GvnLDpDYFT5IJ5u19PUhBOuffTfCyWmQIzA"
 
 # --- Streamlit UI設定 ---
 st.set_page_config(page_title="ナカオさんの函館歴史探訪", layout="wide")
@@ -42,41 +42,41 @@ def load_raw_data():
                 try:
                     all_data.append(json.loads(line))
                 except json.JSONDecodeError:
-                    st.warning(f"rag_data.jsonlに不正な形式の行があったため、スキップされました。")
+                    st.warning("rag_data.jsonl に不正な行がありました（スキップされました）。")
     return all_data
 
 @st.cache_resource
 def load_vectorstore(_raw_data):
-    documents_with_metadata = []
+    splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
+    split_docs = []
+
     for data in _raw_data:
-        doc = Document(
+        base_doc = Document(
             page_content=data["text"],
             metadata={
-                "source_video": data.get("source_video", "不明なソース"),
+                "source_video": data.get("source_video", "メタデータ未登録"),
                 "url": data.get("url", "#")
             }
         )
-        documents_with_metadata.append(doc)
+        chunks = splitter.split_documents([base_doc])
+        for c in chunks:
+            c.metadata = base_doc.metadata  # メタデータを明示的に引き継ぐ
+            split_docs.append(c)
 
-    splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
-    docs = splitter.split_documents(documents_with_metadata)
     embedding = OpenAIEmbeddings()
-    vectordb = FAISS.from_documents(docs, embedding=embedding)
+    vectordb = FAISS.from_documents(split_docs, embedding=embedding)
     return vectordb
 
 # --- プロンプトテンプレート ---
 template = """
 あなたは、函館の歴史を案内するベテランガイドのAさんです。
-あなたの役割は、街歩きに参加した人たちからの質問に、まるでその場で語りかけるように、親しみやすく、かつ知識の深さを感じさせる口調で答えることです。
+あなたの役割は、街歩きに参加した人たちからの質問に、まるでその場で語りかけるように、
+親しみやすく、かつ知識の深さを感じさせる口調で答えることです。
 
 --- 回答生成の手順 ---
-1. まず、以下に提示される「参考情報」を読み、文字起こし特有の誤字や不自然な言い回し（例：「えーと」「あのー」、同じ言葉の繰り返しなど）があれば、自然で分かりやすい日本語の文章に**頭の中で**修正してください。ただし、元の情報の意味やニュアンスは変えないでください。
-2. 次に、**手順1で修正した参考情報**と「会話の履歴」を踏まえて、「ユーザーの質問」に答えてください。
-3. 回答は、Aさんの「話し方の特徴」に従って生成してください。
-
---- 厳格なルール ---
-人の名前などの固有名詞は、参考情報に書かれている通りに正確に使用し、勝手に読み仮名を追加したり、推測で補完したりしないでください。
-
+1. 以下の「参考情報」を読み、文字起こし特有の誤字・冗長表現を自然な日本語に頭の中で修正してください。
+2. 参考情報と会話履歴を踏まえ、ユーザーの質問に答えてください。
+3. 固有名詞は参考情報の通り正確に使用し、推測で補完しないでください。
 
 --- 参考情報 ---
 {context}
@@ -88,19 +88,22 @@ template = """
 prompt_template = PromptTemplate.from_template(template)
 
 # --- LLM + 検索チェーンの準備 ---
-llm = ChatOpenAI(model_name="gpt-4.1")
+llm = ChatOpenAI(model_name="gpt-5-turbo")
+
+
 raw_data = load_raw_data()
 vectordb = load_vectorstore(raw_data)
 retriever = vectordb.as_retriever(
-    search_type="similarity_score_threshold",
-    search_kwargs={'score_threshold': 0.8, 'k': 3}
+    search_type="similarity",
+    search_kwargs={'k': 5}  # より多くの関連文を拾う
 )
 
-qa = ConversationalRetrievalChain.from_llm(
-    llm=llm,
+combine_chain = load_qa_with_sources_chain(llm, chain_type="stuff", prompt=prompt_template)
+
+qa = ConversationalRetrievalChain(
     retriever=retriever,
-    return_source_documents=True,
-    combine_docs_chain_kwargs={"prompt": prompt_template}
+    combine_docs_chain=combine_chain,
+    return_source_documents=True
 )
 
 # --- Googleスプレッドシート連携 ---
@@ -117,7 +120,7 @@ def connect_to_gsheet():
         worksheet = spreadsheet.worksheet("log")
         return worksheet
     except Exception as e:
-        st.error("Googleスプレッドシートへの接続に失敗しました。Secretsと共有設定を再確認してください。")
+        st.error("Googleスプレッドシートへの接続に失敗しました。")
         st.exception(e)
         return None
 
@@ -137,7 +140,7 @@ if "username" not in st.session_state:
     st.session_state.username = ""
 
 if st.session_state.username == "":
-    st.session_state.username = st.text_input("ニックネームを入力して、Enterキーを押してください", key="username_input")
+    st.session_state.username = st.text_input("ニックネームを入力してEnterを押してください", key="username_input")
     if st.session_state.username:
         st.rerun()
 else:
@@ -148,16 +151,15 @@ else:
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
-            if message["role"] == "assistant":
-                if "source_documents" in message and message["source_documents"]:
-                    with st.expander("🔍 回答の根拠となったテキスト"):
-                        for doc in message["source_documents"]:
-                            video_title = doc.metadata.get("source_video", "不明なソース")
-                            video_url = doc.metadata.get("url", "#")
-                            st.write(f"**参照元:** [{video_title}]({video_url})")
-                            st.write(f"> {doc.page_content}")
+            if message["role"] == "assistant" and "source_documents" in message:
+                with st.expander("🔍 回答の根拠となったテキスト"):
+                    for doc in message["source_documents"]:
+                        src = doc.metadata.get("source_video", "メタデータ未登録")
+                        url = doc.metadata.get("url", "#")
+                        st.markdown(f"**参照元:** [{src}]({url})")
+                        st.write(f"> {doc.page_content}")
 
-    if query := st.chat_input("💬 函館の街歩きに基づいて質問してみてください"):
+    if query := st.chat_input("💬 函館の街歩きに関する質問をどうぞ！"):
         st.session_state.messages.append({"role": "user", "content": query})
         with st.chat_message("user"):
             st.markdown(query)
@@ -168,27 +170,25 @@ else:
                 for msg in st.session_state.messages[:-1]:
                     if msg["role"] == "user":
                         chat_history.append((msg["content"], ""))
-                    elif msg["role"] == "assistant":
-                        if chat_history:
-                            last_q, _ = chat_history[-1]
-                            chat_history[-1] = (last_q, msg["content"])
+                    elif msg["role"] == "assistant" and chat_history:
+                        last_q, _ = chat_history[-1]
+                        chat_history[-1] = (last_q, msg["content"])
 
                 result = qa({"question": query, "chat_history": chat_history})
                 response = result["answer"]
-                
+
                 st.markdown(response)
-                
                 append_log_to_gsheet(worksheet, st.session_state.username, query, response)
-                
+
                 with st.expander("🔍 回答の根拠となったテキスト"):
                     for doc in result["source_documents"]:
-                        video_title = doc.metadata.get("source_video", "不明なソース")
-                        video_url = doc.metadata.get("url", "#")
-                        st.write(doc.page_content)
-                        st.write(f"**参照元:** [{video_title}]({video_url})")
+                        src = doc.metadata.get("source_video", "メタデータ未登録")
+                        url = doc.metadata.get("url", "#")
+                        st.markdown(f"**参照元:** [{src}]({url})")
+                        st.write(f"> {doc.page_content}")
 
                 st.session_state.messages.append({
-                    "role": "assistant", 
+                    "role": "assistant",
                     "content": response,
                     "source_documents": result["source_documents"]
                 })
