@@ -124,7 +124,7 @@ vectordb = load_vectorstore(raw_data)
 # (0.8 -> 0.6 に下げることで、より広い範囲のドキュメントを許可する)
 retriever = vectordb.as_retriever(
     search_type="similarity_score_threshold",
-    search_kwargs={'score_threshold': 0.7, 'k': 3} # 0.8から0.6に変更, kは元の3を維持
+    search_kwargs={'score_threshold': 0.7, 'k': 2} # 0.8から0.6に変更, kは元の3を維持
 )
 
 qa = ConversationalRetrievalChain.from_llm(
