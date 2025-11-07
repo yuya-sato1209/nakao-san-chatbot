@@ -35,7 +35,7 @@ os.environ["OPENAI_API_KEY"] = openai_api_key
 @st.cache_data
 def load_raw_data():
     all_data = []
-    with open("rag_data.jsonl", "r", encoding="utf-8") as f:
+    with open("rag_data_cleaned.jsonl", "r", encoding="utf-8") as f:
         for line in f:
             if line.strip():
                 try:
