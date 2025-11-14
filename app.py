@@ -18,7 +18,7 @@ import json
 from langchain.retrievers import ContextualCompressionRetriever
 from langchain_community.cross_encoders import HuggingFaceCrossEncoder
 # ▲▲▲ 追加ここまで ▲▲▲
-
+from langchain_community.retrievers import SentenceTransformerRerank
 SPREADSHEET_ID = "1xeuewRd2GvnLDpDYFT5IJ5u19PUhBOuffTfCyWmQIzA"
 
 st.set_page_config(page_title="ナカオさんの函館歴史探訪", layout="wide")
