@@ -15,8 +15,8 @@ import pytz
 import json
 
 # ▼▼▼ ★ Reranker用ライブラリ ▼▼▼
-from langchain_community.retrievers import ContextualCompressionRetriever
-from langchain_community.document_transformers import SentenceTransformerRerank
+from langchain.retrievers import ContextualCompressionRetriever
+from langchain_community.cross_encoders import HuggingFaceCrossEncoder
 # ▲▲▲ 追加ここまで ▲▲▲
 
 SPREADSHEET_ID = "1xeuewRd2GvnLDpDYFT5IJ5u19PUhBOuffTfCyWmQIzA"
