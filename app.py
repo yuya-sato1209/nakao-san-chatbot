@@ -14,14 +14,11 @@ from datetime import datetime
 import pytz
 import json
 
-# ▼▼▼ 高精度検索に必要なライブラリ ▼▼▼
+# ▼▼▼ ハイブリッド検索に必要なライブラリ ▼▼▼
 from langchain_community.retrievers import BM25Retriever
 from langchain.retrievers import EnsembleRetriever
-from langchain.retrievers import ContextualCompressionRetriever
-from langchain.retrievers.document_compressors import LLMChainFilter
 
 # --- 定数定義 ---
-# ▼▼▼ ここにあなたのスプレッドシートIDを設定してください ▼▼▼
 SPREADSHEET_ID = "1xeuewRd2GvnLDpDYFT5IJ5u19PUhBOuffTfCyWmQIzA" 
 
 # --- Streamlit UI設定 ---
@@ -47,34 +44,32 @@ def load_raw_data():
             for line in f:
                 if line.strip():
                     try:
-                        data = json.loads(line)
-                        # テキストが空でないデータのみ読み込む
-                        if data.get("text") and data.get("text").strip():
-                            all_data.append(data)
+                        all_data.append(json.loads(line))
                     except json.JSONDecodeError:
                         pass
     except FileNotFoundError:
         return []
     return all_data
 
-# --- 検索システムの構築（ハイブリッド + AIフィルタリング） ---
+# --- ハイブリッド検索の構築 ---
 @st.cache_resource
 def setup_retrievers(_raw_data):
     if not _raw_data:
         return None
 
-    # 1. ドキュメント作成
+    # 1. ドキュメントの作成
     documents = []
     for data in _raw_data:
-        doc = Document(
-            page_content=data["text"],
-            metadata={
-                "source_video": data.get("source_video", "不明なソース"),
-                "url": data.get("url", "#")
-                # 写真URLは使用しないため読み込みません
-            }
-        )
-        documents.append(doc)
+        if data.get("text") and data.get("text").strip():
+            doc = Document(
+                page_content=data["text"],
+                metadata={
+                    "source_video": data.get("source_video", "不明なソース"),
+                    "url": data.get("url", "#")
+                    # 写真URLは読み込みません
+                }
+            )
+            documents.append(doc)
 
     # 2. テキスト分割
     splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
@@ -83,37 +78,25 @@ def setup_retrievers(_raw_data):
     if not split_docs:
         return None
 
-    # 3. ハイブリッド検索の準備（広めに集めるため k=5 に設定）
+    # 3. ベクトル検索機 (FAISS) の作成 - 「意味」で探す
     embedding = OpenAIEmbeddings()
     vectorstore = FAISS.from_documents(split_docs, embedding=embedding)
-    
-    # FAISS（意味検索）: 5件取得
-    faiss_retriever = vectorstore.as_retriever(search_kwargs={'k': 5})
-    
-    # BM25（キーワード検索）: 5件取得
+    # FAISSからは上位2件を取得
+    faiss_retriever = vectorstore.as_retriever(search_kwargs={'k': 2})
+
+    # 4. キーワード検索機 (BM25) の作成 - 「単語」で探す
     # ※ rank_bm25ライブラリが必要です
     bm25_retriever = BM25Retriever.from_documents(split_docs)
-    bm25_retriever.k = 5
+    bm25_retriever.k = 2 # BM25からも上位2件を取得
 
-    # アンサンブル（合体）：計10件の候補を集める
+    # 5. アンサンブル検索機 (Hybrid) の作成
+    # weights=[0.5, 0.5] は、ベクトル検索とキーワード検索を半々の重要度で扱う設定
     ensemble_retriever = EnsembleRetriever(
         retrievers=[bm25_retriever, faiss_retriever],
         weights=[0.5, 0.5]
     )
-
-    # 4. 【重要】AIによるフィルタリング機能の追加
-    # GPT-4oを使って「このドキュメントは質問に関連するか？」を判定させる
-    llm = ChatOpenAI(model_name="gpt-4.1", temperature=0)
-    _filter = LLMChainFilter.from_llm(llm)
-
-    # 検索機にフィルターを取り付ける
-    # アンサンブルで取れた最大10件の中から、AIが「関連あり」と判断したものだけを通過させる
-    compression_retriever = ContextualCompressionRetriever(
-        base_compressor=_filter,
-        base_retriever=ensemble_retriever
-    )
     
-    return compression_retriever
+    return ensemble_retriever
 
 # --- プロンプトテンプレート ---
 # (プロンプト自体は変更なし)
@@ -148,18 +131,18 @@ prompt_template = PromptTemplate.from_template(template)
 llm = ChatOpenAI(model_name="gpt-4.1", temperature=0.3) 
 raw_data = load_raw_data()
 
-# 検索機のセットアップ（フィルタリング付き）
+# 検索機のセットアップ
 retriever = setup_retrievers(raw_data)
 
 if retriever:
     qa = ConversationalRetrievalChain.from_llm(
         llm=llm,
-        retriever=retriever, # フィルタリング付きハイブリッド検索機を使用
+        retriever=retriever, # ハイブリッド検索機を使用
         return_source_documents=True,
         combine_docs_chain_kwargs={"prompt": prompt_template}
     )
 else:
-    st.error("知識源データ（rag_data_cleaned.jsonl）が見つからないか、有効なデータがありません。")
+    st.error("知識源データが読み込めませんでした。rag_data.jsonlを確認してください。")
     st.stop()
 
 # --- Googleスプレッドシート連携 ---
@@ -207,7 +190,6 @@ else:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
             if message["role"] == "assistant":
-                # フィルタリングされた結果があれば表示
                 if "source_documents" in message and message["source_documents"]:
                     with st.expander("🔍 回答の根拠となったテキスト"):
                         for doc in message["source_documents"]:
@@ -215,10 +197,6 @@ else:
                             video_url = doc.metadata.get("url", "#")
                             st.write(f"**参照元:** [{video_title}]({video_url})")
                             st.write(f"> {doc.page_content}")
-                else:
-                     # フィルタリングですべて弾かれた場合など
-                    with st.expander("ℹ️ 補足情報"):
-                        st.write("提供された資料の中には、直接関連する情報が見つかりませんでした（AIの知識で回答しています）。")
 
     if query := st.chat_input("💬 函館の街歩きに基づいて質問してみてください"):
         st.session_state.messages.append({"role": "user", "content": query})
@@ -243,17 +221,12 @@ else:
                 
                 append_log_to_gsheet(worksheet, st.session_state.username, query, response)
                 
-                # フィルタリングされた結果があれば表示
-                if result["source_documents"]:
-                    with st.expander("🔍 回答の根拠となったテキスト"):
-                        for doc in result["source_documents"]:
-                            video_title = doc.metadata.get("source_video", "不明なソース")
-                            video_url = doc.metadata.get("url", "#")
-                            st.write(doc.page_content)
-                            st.write(f"**参照元:** [{video_title}]({video_url})")
-                else:
-                    with st.expander("ℹ️ 補足情報"):
-                        st.write("提供された資料の中には、直接関連する情報が見つかりませんでした（AIの知識で回答しています）。")
+                with st.expander("🔍 回答の根拠となったテキスト"):
+                    for doc in result["source_documents"]:
+                        video_title = doc.metadata.get("source_video", "不明なソース")
+                        video_url = doc.metadata.get("url", "#")
+                        st.write(doc.page_content)
+                        st.write(f"**参照元:** [{video_title}]({video_url})")
 
                 st.session_state.messages.append({
                     "role": "assistant", 
