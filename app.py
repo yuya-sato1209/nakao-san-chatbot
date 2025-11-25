@@ -114,7 +114,7 @@ def setup_retrievers(_raw_data):
     # 5. アンサンブル検索機 (Hybrid) の作成
     ensemble_retriever = EnsembleRetriever(
         retrievers=[bm25_retriever, faiss_retriever],
-        weights=[0.5, 0.5]
+        weights=[0.3, 0.7]
     )
     
     return ensemble_retriever
@@ -127,6 +127,8 @@ template = """
 --- 重要ルール：ユーザーの質問内容に誤字・略称・曖昧性がある場合 ---
 参考情報またはあなたの知識をもとに「正しい名称へ訂正して回答」してください。
 訂正は丁寧に行い、「正しくは〜です」という形で伝えてください。
+複数の候補がある場合、質問に関連するもののみを使って回答してください。
+明らかに関係ない参考情報は無視してください。
 
 --- 回答の方針 ---
 1. あなたの回答は、参考情報を基に作成してください。
