@@ -14,7 +14,7 @@ from datetime import datetime
 import pytz
 import json
 
-# ▼▼▼ ハイブリッド検索に必要なライブラリ ▼▼▼
+# ▼▼▼ ハイブリッド検索 & 日本語処理に必要なライブラリ ▼▼▼
 from langchain_community.retrievers import BM25Retriever
 from langchain.retrievers import EnsembleRetriever
 
@@ -34,6 +34,27 @@ if not openai_api_key:
     st.stop()
 
 os.environ["OPENAI_API_KEY"] = openai_api_key
+
+# --- ▼▼▼ 日本語トークナイザー（形態素解析）の準備 ▼▼▼ ---
+# BM25で日本語を正しく単語区切りにするための関数です
+def get_japanese_tokenizer():
+    try:
+        from fugashi import Tagger
+        # -Owakati は分かち書き（スペース区切り）を出力するオプション
+        tagger = Tagger('-Owakati')
+        
+        def tokenize(text):
+            # テキストを単語リストに変換して返す
+            return tagger.parse(text).split()
+            
+        return tokenize
+    except ImportError:
+        # ライブラリがない場合のフォールバック（文字単位分割）
+        st.warning("⚠️ 'fugashi' ライブラリが見つかりません。精度が落ちる可能性があります。")
+        return lambda text: list(text)
+
+# トークナイザーを初期化
+japanese_tokenizer = get_japanese_tokenizer()
 
 # --- データ読み込み関数 ---
 @st.cache_data
@@ -66,13 +87,12 @@ def setup_retrievers(_raw_data):
                 metadata={
                     "source_video": data.get("source_video", "不明なソース"),
                     "url": data.get("url", "#")
-                    # 写真URLは読み込みません
                 }
             )
             documents.append(doc)
 
     # 2. テキスト分割
-    splitter = RecursiveCharacterTextSplitter(chunk_size=800, chunk_overlap=100)
+    splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
     split_docs = splitter.split_documents(documents)
     
     if not split_docs:
@@ -81,16 +101,17 @@ def setup_retrievers(_raw_data):
     # 3. ベクトル検索機 (FAISS) の作成 - 「意味」で探す
     embedding = OpenAIEmbeddings()
     vectorstore = FAISS.from_documents(split_docs, embedding=embedding)
-    # FAISSからは上位2件を取得
     faiss_retriever = vectorstore.as_retriever(search_kwargs={'k': 2})
 
     # 4. キーワード検索機 (BM25) の作成 - 「単語」で探す
-    # ※ rank_bm25ライブラリが必要です
-    bm25_retriever = BM25Retriever.from_documents(split_docs)
-    bm25_retriever.k = 2 # BM25からも上位2件を取得
+    # ▼▼▼ ここで日本語トークナイザーを適用 ▼▼▼
+    bm25_retriever = BM25Retriever.from_documents(
+        split_docs,
+        preprocess_func=japanese_tokenizer # 日本語対応を追加
+    )
+    bm25_retriever.k = 2
 
     # 5. アンサンブル検索機 (Hybrid) の作成
-    # weights=[0.5, 0.5] は、ベクトル検索とキーワード検索を半々の重要度で扱う設定
     ensemble_retriever = EnsembleRetriever(
         retrievers=[bm25_retriever, faiss_retriever],
         weights=[0.5, 0.5]
@@ -99,25 +120,20 @@ def setup_retrievers(_raw_data):
     return ensemble_retriever
 
 # --- プロンプトテンプレート ---
-# (プロンプト自体は変更なし)
 template = """
 あなたは、函館の歴史を案内するベテランガイドのAさんです。
 あなたの役割は、街歩きに参加した人たちからの質問に、まるでその場で語りかけるように、親しみやすく、かつ知識の深さを感じさせる口調で答えることです。
 
-\---重要ルール：ユーザーの質問内容に誤字・略称・曖昧性がある場合---
+--- 重要ルール：ユーザーの質問内容に誤字・略称・曖昧性がある場合 ---
 参考情報またはあなたの知識をもとに「正しい名称へ訂正して回答」してください。
 訂正は丁寧に行い、「正しくは〜です」という形で伝えてください。
-参考情報の中で明らかに関係ないものは無視して、最も関連性の高い情報のみを使用してください。
 
-\--- 回答の方針 ---
+--- 回答の方針 ---
+1. あなたの回答は、参考情報を基に作成してください。
+2. 過去の「会話の履歴」も踏まえて、自然な会話になるようにしてください。
 
-1.  あなたの回答は、参考情報を最優先にして作成してください。
-2.  過去の「会話の履歴」も踏まえて、自然な会話になるようにしてください。
-
-
-\--- 話し方の特徴 ---
-
-  - 語尾には「〜ですな」「〜というわけです」「〜なんですよ」などを使い、柔らかく断定的な話し方をしてください。
+--- 話し方の特徴 ---
+- 語尾には「〜ですな」「〜というわけです」「〜なんですよ」などを使い、柔らかく断定的な話し方をしてください。
 
 --- 参考情報 ---
 {context}
@@ -129,6 +145,7 @@ template = """
 prompt_template = PromptTemplate.from_template(template)
 
 # --- LLM + 検索チェーンの準備 ---
+# ▼▼▼ モデル名を正しい "gpt-4o" に修正 ▼▼▼
 llm = ChatOpenAI(model_name="gpt-4.1", temperature=0.3) 
 raw_data = load_raw_data()
 
@@ -143,7 +160,7 @@ if retriever:
         combine_docs_chain_kwargs={"prompt": prompt_template}
     )
 else:
-    st.error("知識源データが読み込めませんでした。rag_data.jsonlを確認してください。")
+    st.error("知識源データが読み込めませんでした。rag_data_cleaned.jsonlを確認してください。")
     st.stop()
 
 # --- Googleスプレッドシート連携 ---
