@@ -2,10 +2,9 @@ import streamlit as st
 from langchain_community.chat_models import ChatOpenAI
 from langchain_community.vectorstores import FAISS
 from langchain_community.embeddings import OpenAIEmbeddings
+from langchain.chains import ConversationalRetrievalChain
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.prompts import PromptTemplate
-from langchain.chains import RetrievalQA
-from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain_core.documents import Document
 from dotenv import load_dotenv
 import os
@@ -15,167 +14,223 @@ from datetime import datetime
 import pytz
 import json
 
-# ▼▼▼ Hybrid Search ▼▼▼
+# ▼▼▼ ハイブリッド検索に必要なライブラリ ▼▼▼
 from langchain_community.retrievers import BM25Retriever
 from langchain.retrievers import EnsembleRetriever
 
-# --- Google sheet settings ---
+# --- 定数定義 ---
 SPREADSHEET_ID = "1xeuewRd2GvnLDpDYFT5IJ5u19PUhBOuffTfCyWmQIzA" 
 
-# --- UI ---
+# --- Streamlit UI設定 ---
 st.set_page_config(page_title="ナカオさんの函館歴史探訪", layout="wide")
 st.title("🎓 ナカオさんの函館歴史探訪")
 
-# --- Load API ---
+# --- APIキーの読み込み ---
 load_dotenv()
 openai_api_key = os.getenv("OPENAI_API_KEY") or st.secrets.get("OPENAI_API_KEY")
 
 if not openai_api_key:
-    st.error("OpenAI APIキーがありません。.envかStreamlit Secretsに設定してください。")
+    st.error("OpenAI APIキーが見つかりません。.envファイルまたはStreamlitのSecretsに設定してください。")
     st.stop()
 
 os.environ["OPENAI_API_KEY"] = openai_api_key
 
-# --- Load data ---
+# --- データ読み込み関数 ---
 @st.cache_data
 def load_raw_data():
-    rows = []
+    all_data = []
     try:
         with open("rag_data_cleaned.jsonl", "r", encoding="utf-8") as f:
             for line in f:
                 if line.strip():
-                    rows.append(json.loads(line))
+                    try:
+                        all_data.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        pass
     except FileNotFoundError:
-        st.error("rag_data_cleaned.jsonl が見つかりません。")
         return []
-    return rows
+    return all_data
 
-
-# --- Create Hybrid Retriever ---
+# --- ハイブリッド検索の構築 ---
 @st.cache_resource
-def create_retriever(_raw):
+def setup_retrievers(_raw_data):
+    if not _raw_data:
+        return None
 
-    docs = []
-    for data in _raw:
-        if "text" in data and data["text"].strip():
-            docs.append(
-                Document(
-                    page_content=data["text"],
-                    metadata={
-                        "source_video": data.get("source_video", "不明"),
-                        "url": data.get("url", "#")
-                    }
-                )
+    # 1. ドキュメントの作成
+    documents = []
+    for data in _raw_data:
+        if data.get("text") and data.get("text").strip():
+            doc = Document(
+                page_content=data["text"],
+                metadata={
+                    "source_video": data.get("source_video", "不明なソース"),
+                    "url": data.get("url", "#")
+                    # 写真URLは読み込みません
+                }
             )
+            documents.append(doc)
 
+    # 2. テキスト分割
     splitter = RecursiveCharacterTextSplitter(chunk_size=800, chunk_overlap=100)
-    docs = splitter.split_documents(docs)
+    split_docs = splitter.split_documents(documents)
+    
+    if not split_docs:
+        return None
 
-    embeddings = OpenAIEmbeddings()
-    vectorstore = FAISS.from_documents(docs, embeddings)
-    faiss = vectorstore.as_retriever(search_kwargs={'k': 2})
+    # 3. ベクトル検索機 (FAISS) の作成 - 「意味」で探す
+    embedding = OpenAIEmbeddings()
+    vectorstore = FAISS.from_documents(split_docs, embedding=embedding)
+    # FAISSからは上位2件を取得
+    faiss_retriever = vectorstore.as_retriever(search_kwargs={'k': 2})
 
-    bm25 = BM25Retriever.from_documents(docs)
-    bm25.k = 2
+    # 4. キーワード検索機 (BM25) の作成 - 「単語」で探す
+    # ※ rank_bm25ライブラリが必要です
+    bm25_retriever = BM25Retriever.from_documents(split_docs)
+    bm25_retriever.k = 2 # BM25からも上位2件を取得
 
-    return EnsembleRetriever(retrievers=[faiss, bm25], weights=[0.55, 0.45])
+    # 5. アンサンブル検索機 (Hybrid) の作成
+    # weights=[0.5, 0.5] は、ベクトル検索とキーワード検索を半々の重要度で扱う設定
+    ensemble_retriever = EnsembleRetriever(
+        retrievers=[bm25_retriever, faiss_retriever],
+        weights=[0.5, 0.5]
+    )
+    
+    return ensemble_retriever
+
+# --- プロンプトテンプレート ---
+# (プロンプト自体は変更なし)
+template = """
+あなたは、函館の歴史を案内するベテランガイドのAさんです。
+あなたの役割は、街歩きに参加した人たちからの質問に、まるでその場で語りかけるように、親しみやすく、かつ知識の深さを感じさせる口調で答えることです。
+
+\---重要ルール：ユーザーの質問内容に誤字・略称・曖昧性がある場合---
+参考情報またはあなたの知識をもとに「正しい名称へ訂正して回答」してください。
+訂正は丁寧に行い、「正しくは〜です」という形で伝えてください。
+参考情報の中で明らかに関係ないものは無視して、最も関連性の高い情報のみを使用してください。
+
+\--- 回答の方針 ---
+
+1.  あなたの回答は、参考情報を最優先にして作成してください。
+2.  過去の「会話の履歴」も踏まえて、自然な会話になるようにしてください。
 
 
-# --- Prompt (修正版: 誤称訂正ルール強化) ---
-prompt = PromptTemplate.from_template("""
-あなたは函館の歴史を案内するベテラン語り部「ナカオさん」です。
+\--- 話し方の特徴 ---
 
-📝 **重要ルール**
-- ユーザーが名前を誤って入力した場合は、参考情報または知識をもとに **正しい表記へ直して回答**してください。
-- 訂正はやさしく「正しくは〜です」と前置きしてから説明してください。
+  - 語尾には「〜ですな」「〜というわけです」「〜なんですよ」などを使い、柔らかく断定的な話し方をしてください。
 
-🎤 **話し方**
-- 「〜ですな」「〜というわけなんです」「〜なんですよ」などの語尾で話してください。
-- 文章は硬すぎず、温かい語り口。
-
-📚 **参考情報**
+--- 参考情報 ---
 {context}
-
-💬 **会話履歴**
+--- 会話の履歴 ---
 {chat_history}
-
-❓ **質問**
+--- ユーザーの質問 ---
 {question}
-""")
+"""
+prompt_template = PromptTemplate.from_template(template)
 
-
-# --- Build RAG chain ---
-@st.cache_resource
-def build_qa_chain(retriever):
-    llm = ChatOpenAI(model_name="gpt-5", temperature=0.3)
-
-    combine_chain = create_stuff_documents_chain(
-        llm=llm,
-        prompt=prompt
-    )
-
-    return RetrievalQA(
-        retriever=retriever,
-        combine_documents_chain=combine_chain,
-        return_source_documents=True
-    )
-
-
+# --- LLM + 検索チェーンの準備 ---
+llm = ChatOpenAI(model_name="gpt-4.1", temperature=0.3) 
 raw_data = load_raw_data()
-retriever = create_retriever(raw_data)
-qa_chain = build_qa_chain(retriever)
 
+# 検索機のセットアップ
+retriever = setup_retrievers(raw_data)
 
-# --- Google Sheets logging ---
-def connect_sheet():
+if retriever:
+    qa = ConversationalRetrievalChain.from_llm(
+        llm=llm,
+        retriever=retriever, # ハイブリッド検索機を使用
+        return_source_documents=True,
+        combine_docs_chain_kwargs={"prompt": prompt_template}
+    )
+else:
+    st.error("知識源データが読み込めませんでした。rag_data.jsonlを確認してください。")
+    st.stop()
+
+# --- Googleスプレッドシート連携 ---
+@st.cache_resource
+def connect_to_gsheet():
     try:
         creds_dict = st.secrets["gcp_service_account"]
         creds = Credentials.from_service_account_info(creds_dict)
-        client = gspread.authorize(creds.with_scopes(["https://www.googleapis.com/auth/spreadsheets"]))
-        return client.open_by_key(SPREADSHEET_ID).worksheet("log")
-    except:
-        st.warning("📄 Google Sheetsに接続できませんでした。ログ保存はスキップします。")
+        scoped_creds = creds.with_scopes([
+            "https://www.googleapis.com/auth/spreadsheets"
+        ])
+        client = gspread.authorize(scoped_creds)
+        spreadsheet = client.open_by_key(SPREADSHEET_ID)
+        worksheet = spreadsheet.worksheet("log")
+        return worksheet
+    except Exception as e:
+        st.error("Googleスプレッドシートへの接続に失敗しました。Secretsと共有設定を再確認してください。")
         return None
 
-sheet = connect_sheet()
+def append_log_to_gsheet(worksheet, username, query, response):
+    if worksheet is not None:
+        try:
+            jst = pytz.timezone('Asia/Tokyo')
+            timestamp = datetime.now(jst).strftime('%Y-%m-%d %H:%M:%S')
+            worksheet.append_row([timestamp, username, query, response])
+        except Exception:
+            pass
 
+worksheet = connect_to_gsheet()
 
-def log_message(user, input_text, output):
-    if sheet:
-        timestamp = datetime.now(pytz.timezone("Asia/Tokyo")).strftime("%Y-%m-%d %H:%M")
-        sheet.append_row([timestamp, user, input_text, output])
+# --- チャット機能 ---
+if "username" not in st.session_state:
+    st.session_state.username = ""
 
+if st.session_state.username == "":
+    st.session_state.username = st.text_input("ニックネームを入力して、Enterキーを押してください", key="username_input")
+    if st.session_state.username:
+        st.rerun()
+else:
+    st.write(f"こんにちは、{st.session_state.username}さん！")
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
 
-# --- Chat UI ---
-if "messages" not in st.session_state:
-    st.session_state.messages = []
+    for message in st.session_state.messages:
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
+            if message["role"] == "assistant":
+                if "source_documents" in message and message["source_documents"]:
+                    with st.expander("🔍 回答の根拠となったテキスト"):
+                        for doc in message["source_documents"]:
+                            video_title = doc.metadata.get("source_video", "不明なソース")
+                            video_url = doc.metadata.get("url", "#")
+                            st.write(f"**参照元:** [{video_title}]({video_url})")
+                            st.write(f"> {doc.page_content}")
 
-user = st.sidebar.text_input("ニックネーム：", value="ゲスト")
+    if query := st.chat_input("💬 函館の街歩きに基づいて質問してみてください"):
+        st.session_state.messages.append({"role": "user", "content": query})
+        with st.chat_message("user"):
+            st.markdown(query)
 
-if user:
-
-    for msg in st.session_state.messages:
-        with st.chat_message(msg["role"]):
-            st.markdown(msg["content"])
-
-    if q := st.chat_input("💬 函館について聞いてください"):
-        st.session_state.messages.append({"role": "user", "content": q})
         with st.chat_message("assistant"):
-            with st.spinner("考えています…"):
-                result = qa_chain({"query": q})
-                answer = result["result"]
+            with st.spinner("考え中..."):
+                chat_history = []
+                for msg in st.session_state.messages[:-1]:
+                    if msg["role"] == "user":
+                        chat_history.append((msg["content"], ""))
+                    elif msg["role"] == "assistant":
+                        if chat_history:
+                            last_q, _ = chat_history[-1]
+                            chat_history[-1] = (last_q, msg["content"])
 
-                st.markdown(answer)
-                log_message(user, q, answer)
-
-                if result["source_documents"]:
-                    with st.expander("🔍 参考にした資料"):
-                        for doc in result["source_documents"]:
-                            st.write(f"📌 **{doc.metadata['source_video']}**")
-                            st.write(doc.page_content)
-                            st.markdown(f"[▶ 資料を見る]({doc.metadata['url']})")
+                result = qa({"question": query, "chat_history": chat_history})
+                response = result["answer"]
+                
+                st.markdown(response)
+                
+                append_log_to_gsheet(worksheet, st.session_state.username, query, response)
+                
+                with st.expander("🔍 回答の根拠となったテキスト"):
+                    for doc in result["source_documents"]:
+                        video_title = doc.metadata.get("source_video", "不明なソース")
+                        video_url = doc.metadata.get("url", "#")
+                        st.write(doc.page_content)
+                        st.write(f"**参照元:** [{video_title}]({video_url})")
 
                 st.session_state.messages.append({
-                    "role": "assistant",
-                    "content": answer
+                    "role": "assistant", 
+                    "content": response,
+                    "source_documents": result["source_documents"]
                 })
