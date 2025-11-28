@@ -18,6 +18,11 @@ import json
 from langchain_community.retrievers import BM25Retriever
 from langchain.retrievers import EnsembleRetriever
 
+# ▼▼▼ Reranker (bge-reranker) に必要なライブラリ ▼▼▼
+from langchain.retrievers import ContextualCompressionRetriever
+from langchain.retrievers.document_compressors import CrossEncoderReranker
+from langchain_community.cross_encoders import HuggingFaceCrossEncoder
+
 # --- 定数定義 ---
 # ▼▼▼ ここにあなたのスプレッドシートIDを設定してください ▼▼▼
 SPREADSHEET_ID = "1xeuewRd2GvnLDpDYFT5IJ5u19PUhBOuffTfCyWmQIzA" 
@@ -37,24 +42,17 @@ if not openai_api_key:
 os.environ["OPENAI_API_KEY"] = openai_api_key
 
 # --- ▼▼▼ 日本語トークナイザー（形態素解析）の準備 ▼▼▼ ---
-# BM25で日本語を正しく単語区切りにするための関数です
 def get_japanese_tokenizer():
     try:
         from fugashi import Tagger
-        # -Owakati は分かち書き（スペース区切り）を出力するオプション
         tagger = Tagger('-Owakati')
-        
         def tokenize(text):
-            # テキストを単語リストに変換して返す
             return tagger.parse(text).split()
-            
         return tokenize
     except ImportError:
-        # ライブラリがない場合のフォールバック（文字単位分割）
-        st.warning("⚠️ 'fugashi' ライブラリが見つかりません。BM25の精度が落ちる可能性があります。pip install fugashi unidic-lite を推奨します。")
+        st.warning("⚠️ 'fugashi' ライブラリが見つかりません。BM25の精度が落ちる可能性があります。")
         return lambda text: list(text)
 
-# トークナイザーを初期化
 japanese_tokenizer = get_japanese_tokenizer()
 
 # --- データ読み込み関数 ---
@@ -73,13 +71,13 @@ def load_raw_data():
         return []
     return all_data
 
-# --- ハイブリッド検索の構築 ---
+# --- 検索システムの構築（ハイブリッド + Reranker） ---
 @st.cache_resource
 def setup_retrievers(_raw_data):
     if not _raw_data:
         return None
 
-    # 1. ドキュメントの作成
+    # 1. ドキュメント作成
     documents = []
     for data in _raw_data:
         if data.get("text") and data.get("text").strip():
@@ -88,7 +86,7 @@ def setup_retrievers(_raw_data):
                 metadata={
                     "source_video": data.get("source_video", "不明なソース"),
                     "url": data.get("url", "#")
-                    # 写真URLは読み込みません
+                    # 写真URLは使用しないため読み込みません
                 }
             )
             documents.append(doc)
@@ -100,28 +98,46 @@ def setup_retrievers(_raw_data):
     if not split_docs:
         return None
 
-    # 3. ベクトル検索機 (FAISS) の作成 - 「意味」で探す
+    # 3. ベクトル検索機 (FAISS)
+    # Rerankerにかけるため、ここでは多めに候補を取得する (k=10)
     embedding = OpenAIEmbeddings()
     vectorstore = FAISS.from_documents(split_docs, embedding=embedding)
-    # FAISSからは上位2件を取得
-    faiss_retriever = vectorstore.as_retriever(search_kwargs={'k': 2})
+    faiss_retriever = vectorstore.as_retriever(search_kwargs={'k': 10})
 
-    # 4. キーワード検索機 (BM25) の作成 - 「単語」で探す
-    # ▼▼▼ ここで日本語トークナイザーを適用します ▼▼▼
+    # 4. キーワード検索機 (BM25)
+    # こちらも多めに候補を取得する (k=10)
     bm25_retriever = BM25Retriever.from_documents(
         split_docs,
-        preprocess_func=japanese_tokenizer # これにより日本語が単語として認識されます
+        preprocess_func=japanese_tokenizer
     )
-    bm25_retriever.k = 2 # BM25からも上位2件を取得
+    bm25_retriever.k = 10
 
     # 5. アンサンブル検索機 (Hybrid) の作成
-    # weights=[0.5, 0.5] は、ベクトル検索とキーワード検索を半々の重要度で扱う設定
     ensemble_retriever = EnsembleRetriever(
         retrievers=[bm25_retriever, faiss_retriever],
         weights=[0.5, 0.5]
     )
-    
-    return ensemble_retriever
+
+    # 6. ▼▼▼ Reranker (bge-reranker-large) の導入 ▼▼▼
+    try:
+        # モデルのロード（初回はダウンロードに時間がかかります）
+        # メモリ不足になる場合は "BAAI/bge-reranker-base" に変更してください
+        model = HuggingFaceCrossEncoder(model_name="BAAI/bge-reranker-large")
+        
+        # リランカーの設定：上位3件に厳選する
+        compressor = CrossEncoderReranker(model=model, top_n=3)
+        
+        # 検索機にリランカーを組み込む
+        compression_retriever = ContextualCompressionRetriever(
+            base_compressor=compressor,
+            base_retriever=ensemble_retriever
+        )
+        return compression_retriever
+
+    except Exception as e:
+        st.error(f"Rerankerモデルの読み込みに失敗しました: {e}")
+        # 失敗した場合はハイブリッド検索をそのまま返す（フォールバック）
+        return ensemble_retriever
 
 # --- プロンプトテンプレート ---
 template = """
@@ -141,7 +157,6 @@ template = """
 --- 話し方の特徴 ---
 - 街歩きに参加した人たちからの質問に、まるでその場で語りかけるように参考情報の文脈で話してください。
 
-
 --- 参考情報 ---
 {context}
 --- 会話の履歴 ---
@@ -152,22 +167,21 @@ template = """
 prompt_template = PromptTemplate.from_template(template)
 
 # --- LLM + 検索チェーンの準備 ---
-# ▼▼▼ モデル名を正しい "gpt-4o" に修正 ▼▼▼
 llm = ChatOpenAI(model_name="gpt-4.1", temperature=0.3) 
 raw_data = load_raw_data()
 
-# 検索機のセットアップ
+# 検索機のセットアップ（Reranker付き）
 retriever = setup_retrievers(raw_data)
 
 if retriever:
     qa = ConversationalRetrievalChain.from_llm(
         llm=llm,
-        retriever=retriever, # ハイブリッド検索機を使用
+        retriever=retriever, 
         return_source_documents=True,
         combine_docs_chain_kwargs={"prompt": prompt_template}
     )
 else:
-    st.error("知識源データが読み込めませんでした。rag_data.jsonlを確認してください。")
+    st.error("知識源データが読み込めませんでした。rag_data_cleaned.jsonlを確認してください。")
     st.stop()
 
 # --- Googleスプレッドシート連携 ---
@@ -220,6 +234,7 @@ else:
                         for doc in message["source_documents"]:
                             video_title = doc.metadata.get("source_video", "不明なソース")
                             video_url = doc.metadata.get("url", "#")
+                            # 写真表示なし
                             st.write(f"**参照元:** [{video_title}]({video_url})")
                             st.write(f"> {doc.page_content}")
 
@@ -250,6 +265,7 @@ else:
                     for doc in result["source_documents"]:
                         video_title = doc.metadata.get("source_video", "不明なソース")
                         video_url = doc.metadata.get("url", "#")
+                        # 写真表示なし
                         st.write(doc.page_content)
                         st.write(f"**参照元:** [{video_title}]({video_url})")
 
