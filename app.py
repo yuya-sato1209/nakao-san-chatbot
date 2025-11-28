@@ -153,7 +153,7 @@ prompt_template = PromptTemplate.from_template(template)
 
 # --- LLM + 検索チェーンの準備 ---
 # ▼▼▼ モデル名を正しい "gpt-4o" に修正 ▼▼▼
-llm = ChatOpenAI(model_name="gpt-4o", temperature=0.3) 
+llm = ChatOpenAI(model_name="gpt-4.1", temperature=0.3) 
 raw_data = load_raw_data()
 
 # 検索機のセットアップ
