@@ -14,11 +14,12 @@ from datetime import datetime
 import pytz
 import json
 
-# ▼▼▼ ハイブリッド検索 & 日本語処理に必要なライブラリ ▼▼▼
+# ▼▼▼ ハイブリッド検索に必要なライブラリ ▼▼▼
 from langchain_community.retrievers import BM25Retriever
 from langchain.retrievers import EnsembleRetriever
 
 # --- 定数定義 ---
+# ▼▼▼ ここにあなたのスプレッドシートIDを設定してください ▼▼▼
 SPREADSHEET_ID = "1xeuewRd2GvnLDpDYFT5IJ5u19PUhBOuffTfCyWmQIzA" 
 
 # --- Streamlit UI設定 ---
@@ -50,7 +51,7 @@ def get_japanese_tokenizer():
         return tokenize
     except ImportError:
         # ライブラリがない場合のフォールバック（文字単位分割）
-        st.warning("⚠️ 'fugashi' ライブラリが見つかりません。精度が落ちる可能性があります。")
+        st.warning("⚠️ 'fugashi' ライブラリが見つかりません。BM25の精度が落ちる可能性があります。pip install fugashi unidic-lite を推奨します。")
         return lambda text: list(text)
 
 # トークナイザーを初期化
@@ -87,6 +88,7 @@ def setup_retrievers(_raw_data):
                 metadata={
                     "source_video": data.get("source_video", "不明なソース"),
                     "url": data.get("url", "#")
+                    # 写真URLは読み込みません
                 }
             )
             documents.append(doc)
@@ -101,20 +103,22 @@ def setup_retrievers(_raw_data):
     # 3. ベクトル検索機 (FAISS) の作成 - 「意味」で探す
     embedding = OpenAIEmbeddings()
     vectorstore = FAISS.from_documents(split_docs, embedding=embedding)
+    # FAISSからは上位2件を取得
     faiss_retriever = vectorstore.as_retriever(search_kwargs={'k': 2})
 
     # 4. キーワード検索機 (BM25) の作成 - 「単語」で探す
-    # ▼▼▼ ここで日本語トークナイザーを適用 ▼▼▼
+    # ▼▼▼ ここで日本語トークナイザーを適用します ▼▼▼
     bm25_retriever = BM25Retriever.from_documents(
         split_docs,
-        preprocess_func=japanese_tokenizer # 日本語対応を追加
+        preprocess_func=japanese_tokenizer # これにより日本語が単語として認識されます
     )
-    bm25_retriever.k = 2
+    bm25_retriever.k = 2 # BM25からも上位2件を取得
 
     # 5. アンサンブル検索機 (Hybrid) の作成
+    # weights=[0.5, 0.5] は、ベクトル検索とキーワード検索を半々の重要度で扱う設定
     ensemble_retriever = EnsembleRetriever(
         retrievers=[bm25_retriever, faiss_retriever],
-        weights=[0.3, 0.7]
+        weights=[0.5, 0.5]
     )
     
     return ensemble_retriever
@@ -149,7 +153,7 @@ prompt_template = PromptTemplate.from_template(template)
 
 # --- LLM + 検索チェーンの準備 ---
 # ▼▼▼ モデル名を正しい "gpt-4o" に修正 ▼▼▼
-llm = ChatOpenAI(model_name="gpt-4.1", temperature=0.3) 
+llm = ChatOpenAI(model_name="gpt-4o", temperature=0.3) 
 raw_data = load_raw_data()
 
 # 検索機のセットアップ
@@ -163,7 +167,7 @@ if retriever:
         combine_docs_chain_kwargs={"prompt": prompt_template}
     )
 else:
-    st.error("知識源データが読み込めませんでした。rag_data_cleaned.jsonlを確認してください。")
+    st.error("知識源データが読み込めませんでした。rag_data.jsonlを確認してください。")
     st.stop()
 
 # --- Googleスプレッドシート連携 ---
