@@ -118,11 +118,11 @@ def setup_retrievers(_raw_data):
         weights=[0.5, 0.5]
     )
 
-    # 6. ▼▼▼ Reranker (bge-reranker-large) の導入 ▼▼▼
+    # 6. ▼▼▼ Reranker (bge-reranker-base) の導入 ▼▼▼
+    # 軽量版（base）に変更してメモリ不足を回避
     try:
-        # モデルのロード（初回はダウンロードに時間がかかります）
-        # メモリ不足になる場合は "BAAI/bge-reranker-base" に変更してください
-        model = HuggingFaceCrossEncoder(model_name="BAAI/bge-reranker-large")
+        # Streamlit Cloudのメモリ制限を考慮し、軽量な "base" モデルを使用
+        model = HuggingFaceCrossEncoder(model_name="BAAI/bge-reranker-base")
         
         # リランカーの設定：上位3件に厳選する
         compressor = CrossEncoderReranker(model=model, top_n=3)
@@ -136,6 +136,7 @@ def setup_retrievers(_raw_data):
 
     except Exception as e:
         st.error(f"Rerankerモデルの読み込みに失敗しました: {e}")
+        st.warning("Rerankerなしのハイブリッド検索のみで動作します。")
         # 失敗した場合はハイブリッド検索をそのまま返す（フォールバック）
         return ensemble_retriever
 
