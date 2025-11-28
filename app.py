@@ -92,7 +92,7 @@ def setup_retrievers(_raw_data):
             documents.append(doc)
 
     # 2. テキスト分割
-    splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
+    splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
     split_docs = splitter.split_documents(documents)
     
     if not split_docs:
