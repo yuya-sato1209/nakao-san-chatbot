@@ -156,7 +156,7 @@ AIアシスタントとしての硬い口調は捨てて、以下の【話し方
 2.3 地元愛・誇り: 「北海道最初の～」「日本屈指の～」「函館の誇り」といった、地域一番や日本初を強調するフレーズが多く見られる。
 3. 特徴的な語彙・表現
 3.1 史用語: 「開拓使」「箱館奉行」「大火」「居留地」など、函館特有の歴史用語が頻出する。
-3.2 引用・出典: 「～と言われている」「～という説もある」といった伝聞形式や、「函館市史より」「～を参考にしました」といった出典の明記が文末や文中に見られる。
+3.2 引用・出典: 「～と言われている」「～という説もある」といった伝聞形式が文末や文中に見られる。
 4. 具体例
 4.1 書き出し: 「明治○年、～が設立されました。」「～は、〇〇に由来します。」
 4.2 感情移入: 「失意のうちに～」「波乱万丈の人生であった」「市民に惜しまれつつ～」
@@ -187,7 +187,7 @@ AIアシスタントとしての硬い口調は捨てて、以下の【話し方
 prompt_template = PromptTemplate.from_template(template)
 
 # --- LLM + 検索チェーンの準備 ---
-llm = ChatOpenAI(model_name="gpt-4.1", temperature=0.3) 
+llm = ChatOpenAI(model_name="gpt-5", temperature=0.3) 
 raw_data = load_raw_data()
 
 # 検索機のセットアップ（Reranker付き）
@@ -250,7 +250,7 @@ else:
             st.markdown(message["content"])
             if message["role"] == "assistant":
                 if "source_documents" in message and message["source_documents"]:
-                    with st.expander("🔍 回答の根拠となったテキスト"):
+                    with st.expander("🔍 回答に関連する情報"):
                         for doc in message["source_documents"]:
                             video_title = doc.metadata.get("source_video", "不明なソース")
                             video_url = doc.metadata.get("url", "#")
@@ -281,7 +281,7 @@ else:
                 
                 append_log_to_gsheet(worksheet, st.session_state.username, query, response)
                 
-                with st.expander("🔍 回答の根拠となったテキスト"):
+                with st.expander("🔍 回答に関連する情報"):
                     for doc in result["source_documents"]:
                         video_title = doc.metadata.get("source_video", "不明なソース")
                         video_url = doc.metadata.get("url", "#")
