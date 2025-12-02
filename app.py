@@ -187,7 +187,7 @@ AIアシスタントとしての硬い口調は捨てて、以下の【話し方
 prompt_template = PromptTemplate.from_template(template)
 
 # --- LLM + 検索チェーンの準備 ---
-llm = ChatOpenAI(model_name="gpt-5", temperature=0.3) 
+llm = ChatOpenAI(model_name="gpt-4.1", temperature=0.3) 
 raw_data = load_raw_data()
 
 # 検索機のセットアップ（Reranker付き）
