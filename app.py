@@ -11,7 +11,8 @@ from langchain_core.runnables import RunnablePassthrough, RunnableBranch
 
 # ▼▼▼ ハイブリッド検索用 ▼▼▼
 from langchain_community.retrievers import BM25Retriever
-from langchain.retrievers import EnsembleRetriever
+# 【修正】インポート元を langchain_community に変更
+from langchain_community.retrievers import EnsembleRetriever
 
 # その他のライブラリ
 from dotenv import load_dotenv
@@ -101,7 +102,8 @@ def setup_retrievers(_raw_data):
 
     # 3. ベクトル検索機 (FAISS)
     try:
-        embedding = OpenAIEmbeddings()
+        # 【修正】モデル名を明示的に指定
+        embedding = OpenAIEmbeddings(model="text-embedding-3-small")
         vectorstore = FAISS.from_documents(split_docs, embedding=embedding)
         faiss_retriever = vectorstore.as_retriever(search_kwargs={'k': 2})
     except Exception as e:
