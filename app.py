@@ -2,7 +2,8 @@ import streamlit as st
 # ▼▼▼ 最新のLangChainライブラリを使用 ▼▼▼
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_community.vectorstores import FAISS
-from langchain.text_splitter import RecursiveCharacterTextSplitter
+# ▼▼▼ 修正箇所: 古い langchain.text_splitter を新しいパッケージに変更 ▼▼▼
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.documents import Document
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.messages import HumanMessage, AIMessage
