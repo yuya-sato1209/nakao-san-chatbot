@@ -1,11 +1,19 @@
 import streamlit as st
-# ▼▼▼ 最新のライブラリからのインポートに変更 ▼▼▼
+# ▼▼▼ 最新のLangChainライブラリを使用 ▼▼▼
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_community.vectorstores import FAISS
-from langchain.chains import ConversationalRetrievalChain
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain.prompts import PromptTemplate
 from langchain_core.documents import Document
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.messages import HumanMessage, AIMessage
+from langchain.chains import create_history_aware_retriever, create_retrieval_chain
+from langchain.chains.combine_documents import create_stuff_documents_chain
+
+# ▼▼▼ ハイブリッド検索用 ▼▼▼
+from langchain_community.retrievers import BM25Retriever
+from langchain.retrievers import EnsembleRetriever
+
+# その他のライブラリ
 from dotenv import load_dotenv
 import os
 import gspread
@@ -14,12 +22,8 @@ from datetime import datetime
 import pytz
 import json
 
-# ▼▼▼ ハイブリッド検索に必要なライブラリ ▼▼▼
-from langchain_community.retrievers import BM25Retriever
-from langchain.retrievers import EnsembleRetriever
-
 # --- 定数定義 ---
-SPREADSHEET_ID = "1xeuewRd2GvnLDpDYFT5IJ5u19PUhBOuffTfCyWmQIzA" 
+SPREADSHEET_ID = "1xeuewRd2GvnLDpDYFT5IJ5u19PUhBOuffTfCyWmQIzA"
 
 # --- Streamlit UI設定 ---
 st.set_page_config(page_title="ナカオさんの函館歴史探訪", layout="wide")
@@ -35,7 +39,7 @@ if not openai_api_key:
 
 os.environ["OPENAI_API_KEY"] = openai_api_key
 
-# --- ▼▼▼ 日本語トークナイザー（形態素解析）の準備 ▼▼▼ ---
+# --- 日本語トークナイザー（形態素解析） ---
 def get_japanese_tokenizer():
     try:
         from fugashi import Tagger
@@ -58,32 +62,35 @@ def load_raw_data():
             for line in f:
                 if line.strip():
                     try:
-                        all_data.append(json.loads(line))
+                        data = json.loads(line)
+                        if data.get("text") and data.get("text").strip():
+                            all_data.append(data)
                     except json.JSONDecodeError:
                         pass
     except FileNotFoundError:
         return []
     return all_data
 
-# --- ハイブリッド検索の構築 ---
+# --- 検索システムの構築 ---
 @st.cache_resource
 def setup_retrievers(_raw_data):
     if not _raw_data:
         return None
 
-    # 1. ドキュメントの作成
+    # 1. ドキュメント作成
     documents = []
     for data in _raw_data:
-        if data.get("text") and data.get("text").strip():
-            doc = Document(
-                page_content=data["text"],
-                metadata={
-                    "source_video": data.get("source_video", "不明なソース"),
-                    "url": data.get("url", "#")
-                    # 写真URLは読み込みません
-                }
-            )
-            documents.append(doc)
+        doc = Document(
+            page_content=data["text"],
+            metadata={
+                "source_video": data.get("source_video", "不明なソース"),
+                "url": data.get("url", "#")
+            }
+        )
+        documents.append(doc)
+
+    if not documents:
+        return None
 
     # 2. テキスト分割
     splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
@@ -92,20 +99,27 @@ def setup_retrievers(_raw_data):
     if not split_docs:
         return None
 
-    # 3. ベクトル検索機 (FAISS) の作成
-    embedding = OpenAIEmbeddings()
-    vectorstore = FAISS.from_documents(split_docs, embedding=embedding)
-    # FAISSからは上位2件を取得
-    faiss_retriever = vectorstore.as_retriever(search_kwargs={'k': 2})
+    # 3. ベクトル検索機 (FAISS)
+    try:
+        embedding = OpenAIEmbeddings()
+        vectorstore = FAISS.from_documents(split_docs, embedding=embedding)
+        faiss_retriever = vectorstore.as_retriever(search_kwargs={'k': 2})
+    except Exception as e:
+        st.error(f"ベクトル検索の構築に失敗: {e}")
+        return None
 
-    # 4. キーワード検索機 (BM25) の作成
-    bm25_retriever = BM25Retriever.from_documents(
-        split_docs,
-        preprocess_func=japanese_tokenizer
-    )
-    bm25_retriever.k = 2 # BM25からも上位2件を取得
+    # 4. キーワード検索機 (BM25)
+    try:
+        bm25_retriever = BM25Retriever.from_documents(
+            split_docs,
+            preprocess_func=japanese_tokenizer
+        )
+        bm25_retriever.k = 2
+    except Exception as e:
+        st.warning(f"BM25検索の構築に失敗（FAISSのみ使用）: {e}")
+        return faiss_retriever
 
-    # 5. アンサンブル検索機 (Hybrid) の作成
+    # 5. アンサンブル検索機 (Hybrid)
     ensemble_retriever = EnsembleRetriever(
         retrievers=[bm25_retriever, faiss_retriever],
         weights=[0.5, 0.5]
@@ -113,48 +127,71 @@ def setup_retrievers(_raw_data):
     
     return ensemble_retriever
 
-# --- プロンプトテンプレート ---
-template = """
-あなたは、函館の歴史を案内するベテランガイドのAさんです。
-あなたの役割は、街歩きに参加した人たちからの質問に、まるでその場で語りかけるように、親しみやすく、かつ知識の深さを感じさせる口調で答えることです。
 
---- 重要ルール：ユーザーの質問内容に誤字・略称・曖昧性がある場合 ---
-参考情報またはあなたの知識をもとに「正しい名称へ訂正して回答」してください。
-訂正は丁寧に行い、「正しくは〜です」という形で伝えてください。
+# ==================================================
+# ▼▼▼ ここから下が最新のLangChain実装（LCEL） ▼▼▼
+# ==================================================
 
---- 回答の方針 ---
-1. あなたの回答は、参考情報を基に作成してください。
-2. 過去の「会話の履歴」も踏まえて、自然な会話になるようにしてください。
-
---- 話し方の特徴 ---
-- 語尾には「〜ですな」「〜というわけです」「〜なんですよ」などを使い、柔らかく断定的な話し方をしてください。
-
---- 参考情報 ---
-{context}
---- 会話の履歴 ---
-{chat_history}
---- ユーザーの質問 ---
-{question}
+# 1. 検索クエリ生成用プロンプト（文脈理解）
+# ユーザーの最新の質問を、過去の会話履歴を踏まえて「検索しやすい質問」に書き換える指示
+contextualize_q_system_prompt = """
+チャット履歴と最新のユーザーの質問があります。
+この質問は過去の文脈に関連している可能性があります。
+チャット履歴を考慮して、この質問を「単体で理解できる独立した質問文」に書き換えてください。
+質問に答える必要はありません。書き換えた質問文だけを返してください。
+また、固有名詞の誤字（例：「柳川熊」→「柳川熊吉」）があれば訂正してください。
 """
-prompt_template = PromptTemplate.from_template(template)
+contextualize_q_prompt = ChatPromptTemplate.from_messages(
+    [
+        ("system", contextualize_q_system_prompt),
+        MessagesPlaceholder("chat_history"),
+        ("human", "{input}"),
+    ]
+)
 
-# --- LLM + 検索チェーンの準備 ---
-# ▼▼▼ 修正: 存在しない gpt-4.1 を gpt-4o に修正 ▼▼▼
-llm = ChatOpenAI(model_name="gpt-4o", temperature=0.3) 
+# 2. 回答生成用プロンプト（ナカオさんペルソナ）
+qa_system_prompt = """
+あなたは、函館の歴史を案内するベテランガイドの「ナカオさん」です。
+以下の【参考情報】を使って、ユーザーの質問に答えてください。
+
+【話し方の特徴】
+- 語尾には「〜ですな」「〜というわけです」「〜なんですよ」などを使い、親しみやすく話してください。
+- 一人称は「私（わたくし）」です。
+
+【重要ルール】
+- 回答は、必ず【参考情報】の内容に基づいて作成してください。
+- 参考情報に答えがない場合は、「おや、その件については私の手元の資料には載っていないようですなぁ」と正直に答えてください。
+- ユーザーの質問に誤字・略称がある場合は、正しい名称に訂正して答えてください。
+
+【参考情報】
+{context}
+"""
+qa_prompt = ChatPromptTemplate.from_messages(
+    [
+        ("system", qa_system_prompt),
+        MessagesPlaceholder("chat_history"),
+        ("human", "{input}"),
+    ]
+)
+
+# --- LLM + チェーンの構築 ---
+llm = ChatOpenAI(model_name="gpt-4o", temperature=0.3)
 raw_data = load_raw_data()
-
-# 検索機のセットアップ
 retriever = setup_retrievers(raw_data)
 
 if retriever:
-    qa = ConversationalRetrievalChain.from_llm(
-        llm=llm,
-        retriever=retriever,
-        return_source_documents=True,
-        combine_docs_chain_kwargs={"prompt": prompt_template}
+    # 1. 履歴考慮レトリーバー（文脈を理解して検索するチェーン）
+    history_aware_retriever = create_history_aware_retriever(
+        llm, retriever, contextualize_q_prompt
     )
+    
+    # 2. 書類結合チェーン（検索結果を使って回答するチェーン）
+    question_answer_chain = create_stuff_documents_chain(llm, qa_prompt)
+    
+    # 3. 最終的なRAGチェーン（1と2を結合）
+    rag_chain = create_retrieval_chain(history_aware_retriever, question_answer_chain)
 else:
-    st.error("知識源データ（rag_data_cleaned.jsonl）が見つからないか、空です。")
+    st.error("知識源データが読み込めませんでした。")
     st.stop()
 
 # --- Googleスプレッドシート連携 ---
@@ -171,8 +208,7 @@ def connect_to_gsheet():
         worksheet = spreadsheet.worksheet("log")
         return worksheet
     except Exception as e:
-        # 接続エラーでもアプリ自体は動くようにする
-        print(f"スプレッドシート接続エラー: {e}")
+        # 接続エラーでもアプリは動かす
         return None
 
 def append_log_to_gsheet(worksheet, username, query, response):
@@ -199,24 +235,32 @@ else:
     if "messages" not in st.session_state:
         st.session_state.messages = []
 
+    # 過去ログの表示
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
             if message["role"] == "assistant":
-                if "source_documents" in message and message["source_documents"]:
+                # 参照元の表示
+                if "source_documents" in message:
                     with st.expander("🔍 回答の根拠となったテキスト"):
-                        # 重複排除ロジック
                         seen_urls = set()
                         for doc in message["source_documents"]:
-                            video_url = doc.metadata.get("url", "#")
+                            # 辞書形式かDocumentオブジェクトかで分岐
+                            if isinstance(doc, dict):
+                                meta = doc.get("metadata", {})
+                                content = doc.get("page_content", "")
+                            else:
+                                meta = doc.metadata
+                                content = doc.page_content
+
+                            video_url = meta.get("url", "#")
                             if video_url in seen_urls:
                                 continue
                             seen_urls.add(video_url)
                             
-                            video_title = doc.metadata.get("source_video", "不明なソース")
-                            # 写真表示なし
+                            video_title = meta.get("source_video", "不明なソース")
                             st.write(f"**参照元:** [{video_title}]({video_url})")
-                            st.write(f"> {doc.page_content}")
+                            st.write(f"> {content}")
 
     if query := st.chat_input("💬 函館の街歩きに基づいて質問してみてください"):
         st.session_state.messages.append({"role": "user", "content": query})
@@ -225,26 +269,32 @@ else:
 
         with st.chat_message("assistant"):
             with st.spinner("考え中..."):
-                chat_history = []
+                
+                # 会話履歴をLangChain形式に変換
+                chat_history_objs = []
                 for msg in st.session_state.messages[:-1]:
                     if msg["role"] == "user":
-                        chat_history.append((msg["content"], ""))
+                        chat_history_objs.append(HumanMessage(content=msg["content"]))
                     elif msg["role"] == "assistant":
-                        if chat_history:
-                            last_q, _ = chat_history[-1]
-                            chat_history[-1] = (last_q, msg["content"])
+                        chat_history_objs.append(AIMessage(content=msg["content"]))
 
-                result = qa({"question": query, "chat_history": chat_history})
-                response = result["answer"]
+                # ▼▼▼ 新しいチェーンの実行 ▼▼▼
+                # invokeメソッドを使用します
+                result = rag_chain.invoke({
+                    "input": query,
+                    "chat_history": chat_history_objs
+                })
                 
+                response = result["answer"]
+                source_docs = result["context"] # 検索結果は context キーに入っています
+
                 st.markdown(response)
                 
                 append_log_to_gsheet(worksheet, st.session_state.username, query, response)
                 
                 with st.expander("🔍 回答の根拠となったテキスト"):
-                    # 重複排除ロジック
                     seen_urls = set()
-                    for doc in result["source_documents"]:
+                    for doc in source_docs:
                         video_url = doc.metadata.get("url", "#")
                         if video_url in seen_urls:
                             continue
@@ -254,8 +304,9 @@ else:
                         st.write(doc.page_content)
                         st.write(f"**参照元:** [{video_title}]({video_url})")
 
+                # 履歴保存（Documentオブジェクトはシリアライズできない場合があるためテキスト化して保存等は省略、簡易的に保存）
                 st.session_state.messages.append({
                     "role": "assistant", 
                     "content": response,
-                    "source_documents": result["source_documents"]
+                    "source_documents": source_docs
                 })
