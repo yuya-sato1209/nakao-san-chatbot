@@ -173,7 +173,7 @@ def setup_retrievers(_raw_data):
 # ==================================================
 
 # LLMの準備
-llm = ChatOpenAI(model_name="gpt-5-1", temperature=0.3)
+llm = ChatOpenAI(model_name="gpt-5.1", temperature=0.3)
 raw_data = load_raw_data()
 retriever = setup_retrievers(raw_data)
 
