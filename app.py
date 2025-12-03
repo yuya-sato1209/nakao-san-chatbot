@@ -11,8 +11,7 @@ from langchain_core.runnables import RunnablePassthrough, RunnableBranch
 
 # ▼▼▼ ハイブリッド検索用 ▼▼▼
 from langchain_community.retrievers import BM25Retriever
-# 【修正】インポート元を langchain_community に変更
-from langchain_community.retrievers import EnsembleRetriever
+# 【修正】EnsembleRetriever は廃止されたため削除し、自作クラスで代用します
 
 # その他のライブラリ
 from dotenv import load_dotenv
@@ -72,6 +71,42 @@ def load_raw_data():
         return []
     return all_data
 
+# --- 【新規追加】自作 EnsembleRetriever クラス ---
+class SimpleEnsembleRetriever:
+    def __init__(self, retrievers, weights=None, k=4):
+        self.retrievers = retrievers
+        self.weights = weights or [1.0] * len(retrievers)
+        self.k = k
+
+    def invoke(self, query):
+        # 各検索機の結果を統合する簡易実装
+        # ここでは単純に結果を結合して、重み付けなどは簡易的に扱います
+        # 重複排除のためにIDやコンテンツを使うのが一般的ですが、今回は簡易版です
+        all_docs = []
+        seen_content = set()
+        
+        for retriever in self.retrievers:
+            # retriever.invoke(query) で検索実行
+            try:
+                docs = retriever.invoke(query)
+            except AttributeError:
+                # 古いインターフェース対応
+                docs = retriever.get_relevant_documents(query)
+            
+            for doc in docs:
+                if doc.page_content not in seen_content:
+                    all_docs.append(doc)
+                    seen_content.add(doc.page_content)
+        
+        # ここでは単純に前から順にk件返す（高度なランク付けは省略）
+        # 必要に応じてRerankerなどを挟むと精度が上がりますが、まずは動作優先
+        return all_docs[:self.k]
+
+    # LCEL 互換のために __call__ も実装
+    def __call__(self, query):
+        return self.invoke(query)
+
+
 # --- 検索システムの構築 ---
 @st.cache_resource
 def setup_retrievers(_raw_data):
@@ -102,7 +137,6 @@ def setup_retrievers(_raw_data):
 
     # 3. ベクトル検索機 (FAISS)
     try:
-        # 【修正】モデル名を明示的に指定
         embedding = OpenAIEmbeddings(model="text-embedding-3-small")
         vectorstore = FAISS.from_documents(split_docs, embedding=embedding)
         faiss_retriever = vectorstore.as_retriever(search_kwargs={'k': 2})
@@ -121,13 +155,17 @@ def setup_retrievers(_raw_data):
         st.warning(f"BM25検索の構築に失敗（FAISSのみ使用）: {e}")
         return faiss_retriever
 
-    # 5. アンサンブル検索機 (Hybrid)
-    ensemble_retriever = EnsembleRetriever(
-        retrievers=[bm25_retriever, faiss_retriever],
-        weights=[0.5, 0.5]
-    )
-    
-    return ensemble_retriever
+    # 5. アンサンブル検索機 (Hybrid) - 自作クラスを使用
+    try:
+        ensemble_retriever = SimpleEnsembleRetriever(
+            retrievers=[bm25_retriever, faiss_retriever],
+            weights=[0.5, 0.5],
+            k=4 # 合計4件取得
+        )
+        return ensemble_retriever
+    except Exception as e:
+        st.error(f"ハイブリッド検索の構築に失敗: {e}")
+        return faiss_retriever # 失敗時はFAISSのみ返す
 
 
 # ==================================================
