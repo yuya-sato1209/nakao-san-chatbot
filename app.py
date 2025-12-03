@@ -1,14 +1,13 @@
 import streamlit as st
-# ▼▼▼ 最新のLangChainライブラリを使用 ▼▼▼
+# ▼▼▼ 最新のLangChainライブラリ（LCEL）を使用 ▼▼▼
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_community.vectorstores import FAISS
-# ▼▼▼ 修正箇所: 古い langchain.text_splitter を新しいパッケージに変更 ▼▼▼
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.documents import Document
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.messages import HumanMessage, AIMessage
-from langchain.chains import create_history_aware_retriever, create_retrieval_chain
-from langchain.chains.combine_documents import create_stuff_documents_chain
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.runnables import RunnablePassthrough, RunnableBranch
 
 # ▼▼▼ ハイブリッド検索用 ▼▼▼
 from langchain_community.retrievers import BM25Retriever
@@ -130,11 +129,19 @@ def setup_retrievers(_raw_data):
 
 
 # ==================================================
-# ▼▼▼ ここから下が最新のLangChain実装（LCEL） ▼▼▼
+# ▼▼▼ LCELによるチェーン構築（最新方式・完全版） ▼▼▼
 # ==================================================
 
-# 1. 検索クエリ生成用プロンプト（文脈理解）
-# ユーザーの最新の質問を、過去の会話履歴を踏まえて「検索しやすい質問」に書き換える指示
+# LLMの準備
+llm = ChatOpenAI(model_name="gpt-4o", temperature=0.3)
+raw_data = load_raw_data()
+retriever = setup_retrievers(raw_data)
+
+if not retriever:
+    st.error("知識源データが読み込めませんでした。")
+    st.stop()
+
+# 1. 検索クエリ生成用プロンプト
 contextualize_q_system_prompt = """
 チャット履歴と最新のユーザーの質問があります。
 この質問は過去の文脈に関連している可能性があります。
@@ -150,7 +157,17 @@ contextualize_q_prompt = ChatPromptTemplate.from_messages(
     ]
 )
 
-# 2. 回答生成用プロンプト（ナカオさんペルソナ）
+# 検索クエリ生成チェーン
+# 履歴がないときはそのまま、あるときはLLMで書き換える
+query_transform_chain = RunnableBranch(
+    (
+        lambda x: not x.get("chat_history", []),
+        (lambda x: x["input"])
+    ),
+    contextualize_q_prompt | llm | StrOutputParser()
+)
+
+# 2. 回答生成用プロンプト
 qa_system_prompt = """
 あなたは、函館の歴史を案内するベテランガイドの「ナカオさん」です。
 以下の【参考情報】を使って、ユーザーの質問に答えてください。
@@ -175,25 +192,24 @@ qa_prompt = ChatPromptTemplate.from_messages(
     ]
 )
 
-# --- LLM + チェーンの構築 ---
-llm = ChatOpenAI(model_name="gpt-4o", temperature=0.3)
-raw_data = load_raw_data()
-retriever = setup_retrievers(raw_data)
+# ドキュメント整形関数
+def format_docs(docs):
+    return "\n\n".join([d.page_content for d in docs])
 
-if retriever:
-    # 1. 履歴考慮レトリーバー（文脈を理解して検索するチェーン）
-    history_aware_retriever = create_history_aware_retriever(
-        llm, retriever, contextualize_q_prompt
+# 3. 統合チェーン（Retriever + Generation）
+# ここで「検索結果(context_docs)」と「回答(answer)」の両方を保持するように構築
+rag_chain = (
+    RunnablePassthrough.assign(
+        context_docs=query_transform_chain | retriever
     )
-    
-    # 2. 書類結合チェーン（検索結果を使って回答するチェーン）
-    question_answer_chain = create_stuff_documents_chain(llm, qa_prompt)
-    
-    # 3. 最終的なRAGチェーン（1と2を結合）
-    rag_chain = create_retrieval_chain(history_aware_retriever, question_answer_chain)
-else:
-    st.error("知識源データが読み込めませんでした。")
-    st.stop()
+    .assign(
+        context=lambda x: format_docs(x["context_docs"])
+    )
+    .assign(
+        answer=qa_prompt | llm | StrOutputParser()
+    )
+)
+
 
 # --- Googleスプレッドシート連携 ---
 @st.cache_resource
@@ -209,7 +225,6 @@ def connect_to_gsheet():
         worksheet = spreadsheet.worksheet("log")
         return worksheet
     except Exception as e:
-        # 接続エラーでもアプリは動かす
         return None
 
 def append_log_to_gsheet(worksheet, username, query, response):
@@ -279,15 +294,14 @@ else:
                     elif msg["role"] == "assistant":
                         chat_history_objs.append(AIMessage(content=msg["content"]))
 
-                # ▼▼▼ 新しいチェーンの実行 ▼▼▼
-                # invokeメソッドを使用します
+                # ▼▼▼ チェーンの実行 ▼▼▼
                 result = rag_chain.invoke({
                     "input": query,
                     "chat_history": chat_history_objs
                 })
                 
                 response = result["answer"]
-                source_docs = result["context"] # 検索結果は context キーに入っています
+                source_docs = result["context_docs"]
 
                 st.markdown(response)
                 
@@ -305,7 +319,7 @@ else:
                         st.write(doc.page_content)
                         st.write(f"**参照元:** [{video_title}]({video_url})")
 
-                # 履歴保存（Documentオブジェクトはシリアライズできない場合があるためテキスト化して保存等は省略、簡易的に保存）
+                # 履歴保存
                 st.session_state.messages.append({
                     "role": "assistant", 
                     "content": response,
