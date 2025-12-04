@@ -349,7 +349,7 @@ else:
             if message["role"] == "assistant":
                 # 参照元の表示
                 if "source_documents" in message:
-                    with st.expander("🔍 回答の根拠となったテキスト"):
+                    with st.expander("🔍 回答に関連するテキスト"):
                         seen_urls = set()
                         for doc in message["source_documents"]:
                             # 辞書形式かDocumentオブジェクトかで分岐
@@ -398,7 +398,7 @@ else:
                 
                 append_log_to_gsheet(worksheet, st.session_state.username, query, response)
                 
-                with st.expander("🔍 回答の根拠となったテキスト"):
+                with st.expander("🔍 回答に関連するテキスト"):
                     seen_urls = set()
                     for doc in source_docs:
                         video_url = doc.metadata.get("url", "#")
