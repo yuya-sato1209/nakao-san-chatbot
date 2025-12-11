@@ -292,6 +292,7 @@ AIアシスタントとしての硬い口調は捨てて、以下の【話し方
 3. 不明な場合の対応: もし「参考情報」の中に質問の答えが見つからない場合は、無理に創作せず正直に答えてください。
 
 
+
 【参考情報】
 {context}
 """
@@ -396,12 +397,15 @@ else:
         with st.chat_message("assistant"):
             with st.spinner("考え中..."):
                 
-                # 会話履歴をLangChain形式に変換
+                # 会話履歴をLangChain形式（HumanMessage, AIMessage）に変換
+                # ※古いコード（タプル形式）が混ざらないように注意
                 chat_history_objs = []
                 for msg in st.session_state.messages[:-1]:
                     if msg["role"] == "user":
-                        chat_history.append((msg["content"], ""))
+                        # ユーザーの質問
+                        chat_history_objs.append(HumanMessage(content=msg["content"]))
                     elif msg["role"] == "assistant":
+                        # AIの回答
                         chat_history_objs.append(AIMessage(content=msg["content"]))
 
                 # ▼▼▼ チェーンの実行 ▼▼▼
