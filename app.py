@@ -11,7 +11,7 @@ from langchain_core.runnables import RunnablePassthrough, RunnableBranch
 
 # ▼▼▼ ハイブリッド検索用 ▼▼▼
 from langchain_community.retrievers import BM25Retriever
-# EnsembleRetrieverは自作クラス(RRF)で代用
+import re # 正規表現用（クエリ分析に使用）
 
 # その他のライブラリ
 from dotenv import load_dotenv
@@ -39,38 +39,17 @@ if not openai_api_key:
 
 os.environ["OPENAI_API_KEY"] = openai_api_key
 
-# --- 改善②: ストップワード（不要語）の定義 ---
-# 検索ノイズになりやすい一般的な言葉を除外するためのリスト
-STOPWORDS = set([
-    "こと", "もの", "ため", "よう", "これ", "それ", "あれ", "どれ", 
-    "そして", "ですが", "ます", "です", "はい", "いいえ", "という", 
-    "ん", "の", "が", "は", "に", "を", "へ", "と", "て", "で",
-    "さん", "氏", "ぼく", "私", "わたし", "自分"
-])
-
-# --- 改善①: Sudachi による高精度トークナイザー ---
-@st.cache_resource
+# --- 日本語トークナイザー（形態素解析） ---
 def get_japanese_tokenizer():
     try:
-        from sudachipy import tokenizer
-        from sudachipy import dictionary
-        
-        # sudachidict-full を使用して高精度に分割（固有名詞に強い）
-        tokenizer_obj = dictionary.Dictionary(dict="full").create()
-        mode = tokenizer.Tokenizer.SplitMode.C # モードCは最長一致（複合語をなるべく切らない）
-
+        from fugashi import Tagger
+        tagger = Tagger('-Owakati')
         def tokenize(text):
-            # 1. Sudachiで形態素解析
-            tokens = tokenizer_obj.tokenize(text, mode)
-            # 2. 表層形を取り出し、ストップワードを除去
-            words = [t.surface() for t in tokens if t.surface() not in STOPWORDS]
-            return words
-            
+            return tagger.parse(text).split()
         return tokenize
     except ImportError:
-        st.warning("⚠️ 'sudachipy' または 'sudachidict-full' が見つかりません。簡易トークナイザーで動作します。")
-        st.info("精度を上げるには: `pip install sudachipy sudachidict-full`")
-        return lambda text: list(text) # フォールバック
+        st.warning("⚠️ 'fugashi' ライブラリが見つかりません。BM25の精度が落ちる可能性があります。")
+        return lambda text: list(text)
 
 japanese_tokenizer = get_japanese_tokenizer()
 
@@ -92,44 +71,85 @@ def load_raw_data():
         return []
     return all_data
 
-# --- 改善⑤: RRF (Reciprocal Rank Fusion) による統合リトリーバー ---
-# 順位ベースで統合することで、スコア基準が違う検索結果を公平に混ぜ合わせる
+# --- 【新規実装】RRFスコア・閾値・動的重み付け対応リトリーバー ---
 class RRFEnsembleRetriever:
-    def __init__(self, retrievers, k=4, c=60):
+    # インデックス定数（retrieversリストの順序に対応）
+    BM25_IDX = 0
+    FAISS_IDX = 1
+
+    def __init__(self, retrievers, k=4, c=60, score_threshold=0.02):
         self.retrievers = retrievers
-        self.k = k
-        self.c = c # RRFの定数（通常60）
+        self.k = k               # 最終的に残す件数
+        self.c = c               # RRFの定数
+        self.score_threshold = score_threshold # 足切りライン
+
+    def get_dynamic_weights(self, query):
+        """質問タイプに応じて重みを動的に変える"""
+        # 固有名詞や事実を問うキーワードが含まれているかチェック
+        keyword_pattern = r"(誰|どこ|いつ|何年|名前|場所|建物|人物|何て|なんて)"
+        
+        # デフォルトの重みリストを作成（要素数分）
+        weights = [0.5] * len(self.retrievers)
+
+        if re.search(keyword_pattern, query):
+            # 固有名詞系質問 -> BM25(キーワード)重視
+            weights[self.BM25_IDX] = 0.7
+            weights[self.FAISS_IDX] = 0.3
+        else:
+            # 抽象的・説明系質問 -> FAISS(意味)重視
+            weights[self.BM25_IDX] = 0.3
+            weights[self.FAISS_IDX] = 0.7
+            
+        return weights
 
     def invoke(self, query):
         doc_scores = {}
         doc_map = {}
+        
+        # クエリを分析して重みを決定
+        current_weights = self.get_dynamic_weights(query)
 
         # 各リトリーバーで検索を実行
-        for retriever in self.retrievers:
+        for i, retriever in enumerate(self.retrievers):
+            weight = current_weights[i]
+            
             try:
                 docs = retriever.invoke(query)
             except AttributeError:
                 docs = retriever.get_relevant_documents(query)
             
-            # RRFスコア計算: 1 / (順位 + 定数)
             for rank, doc in enumerate(docs):
                 # 内容をキーにして重複をマージ
-                # (metadataも含めて厳密に区別したい場合は doc_id などが必要ですが、今回は簡易的に content で判定)
-                doc_key = doc.page_content
-                if doc_key not in doc_map:
-                    doc_map[doc_key] = doc
-                    doc_scores[doc_key] = 0.0
+                key = doc.page_content
+                if key not in doc_map:
+                    doc_map[key] = doc
+                    doc_scores[key] = 0.0
                 
-                doc_scores[doc_key] += 1.0 / (self.c + rank + 1)
+                # 重み付きRRFスコアの加算
+                # weightが高いほど、その検索機で見つかったことの価値が高まる
+                doc_scores[key] += weight * (1.0 / (self.c + rank + 1))
         
-        # スコアが高い順にソート
-        sorted_keys = sorted(doc_scores.keys(), key=lambda k: doc_scores[k], reverse=True)
+        # スコア順にソート（スコアが高い順）
+        sorted_items = sorted(doc_scores.items(), key=lambda x: x[1], reverse=True)
+        
+        # スコアに基づいてフィルタリング（閾値未満は切り捨て）
+        filtered_docs = []
+        for key, score in sorted_items:
+            if score >= self.score_threshold:
+                filtered_docs.append(doc_map[key])
+        
+        # 【改善】もし閾値で結果が少なすぎる場合は、最低2件は救済して残す
+        if len(filtered_docs) < 2 and sorted_items:
+            # スコア上位2件を強制的に採用（スライス範囲外なら全件になるので安全）
+            filtered_docs = [doc_map[k] for k, _ in sorted_items[:2]]
         
         # 上位k件を返す
-        return [doc_map[k] for k in sorted_keys[:self.k]]
+        return filtered_docs[:self.k]
 
+    # LCEL 互換
     def __call__(self, query):
         return self.invoke(query)
+
 
 # --- 検索システムの構築 ---
 @st.cache_resource
@@ -137,26 +157,24 @@ def setup_retrievers(_raw_data):
     if not _raw_data:
         return None
 
-    # 1. 元のドキュメント（分割なし）を作成 -> 改善④: BM25用
-    documents_full = []
+    # 1. ドキュメント作成
+    documents = []
     for data in _raw_data:
         doc = Document(
             page_content=data["text"],
             metadata={
                 "source_video": data.get("source_video", "不明なソース"),
-                "url": data.get("url", "#"),
-                "type": "full" # 識別用
+                "url": data.get("url", "#")
             }
         )
-        documents_full.append(doc)
+        documents.append(doc)
 
-    if not documents_full:
+    if not documents:
         return None
 
-    # 2. チャンク分割したドキュメントを作成 -> FAISS用
-    # ベクトル検索は短い文章の方が精度が出やすい
+    # 2. テキスト分割
     splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
-    split_docs = splitter.split_documents(documents_full)
+    split_docs = splitter.split_documents(documents)
     
     if not split_docs:
         return None
@@ -165,44 +183,44 @@ def setup_retrievers(_raw_data):
     try:
         embedding = OpenAIEmbeddings(model="text-embedding-3-small")
         vectorstore = FAISS.from_documents(split_docs, embedding=embedding)
-        
-        # FAISSはチャンクから探す (k=4)
-        faiss_retriever = vectorstore.as_retriever(search_kwargs={'k': 4})
+        # RRFにかける前なので、多めに候補を取る (k=10)
+        faiss_retriever = vectorstore.as_retriever(search_kwargs={'k': 10})
     except Exception as e:
         st.error(f"ベクトル検索の構築に失敗: {e}")
         return None
 
     # 4. キーワード検索機 (BM25)
     try:
-        # 改善④: BM25には「分割していない元の長文」を渡す（TF-IDFの精度向上）
+        # 【改善】kを初期化時に指定して確実に反映させる
         bm25_retriever = BM25Retriever.from_documents(
-            documents_full, 
-            preprocess_func=japanese_tokenizer
+            split_docs,
+            preprocess_func=japanese_tokenizer,
+            k=10 # こちらも多めに取る
         )
-        # 改善③: kを少し増やす (k=4)
-        bm25_retriever.k = 4
     except Exception as e:
         st.warning(f"BM25検索の構築に失敗（FAISSのみ使用）: {e}")
         return faiss_retriever
 
-    # 5. RRFで統合
+    # 5. 高機能ハイブリッド検索機 (RRF + 動的重み + フィルタ)
     try:
-        # 改善⑤: RRFアルゴリズムで統合し、最終的に上位4件を返す
+        # Retrieversのリスト順序: [0]=BM25, [1]=FAISS (クラス定数と合わせる)
         ensemble_retriever = RRFEnsembleRetriever(
-            retrievers=[bm25_retriever, faiss_retriever],
-            k=4
+            retrievers=[bm25_retriever, faiss_retriever], 
+            k=4, # 最終的に残すのは4件
+            score_threshold=0.015 # 閾値
         )
         return ensemble_retriever
     except Exception as e:
         st.error(f"ハイブリッド検索の構築に失敗: {e}")
         return faiss_retriever
 
+
 # ==================================================
 # ▼▼▼ LCELによるチェーン構築 ▼▼▼
 # ==================================================
 
 # LLMの準備
-llm = ChatOpenAI(model_name="gpt-5.1", temperature=0.3)
+llm = ChatOpenAI(model_name="gpt-5.1", temperature=0.4)
 raw_data = load_raw_data()
 retriever = setup_retrievers(raw_data)
 
@@ -285,8 +303,9 @@ qa_prompt = ChatPromptTemplate.from_messages(
     ]
 )
 
+# ドキュメント整形関数（空リストなら空文字を返す）
 def format_docs(docs):
-    return "\n\n".join([d.page_content for d in docs])
+    return "\n\n".join([d.page_content for d in docs]) if docs else ""
 
 # 3. 統合チェーン
 rag_chain = (
@@ -300,6 +319,7 @@ rag_chain = (
         answer=qa_prompt | llm | StrOutputParser()
     )
 )
+
 
 # --- Googleスプレッドシート連携 ---
 @st.cache_resource
@@ -346,18 +366,27 @@ else:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
             if message["role"] == "assistant":
+                # 参照元の表示
                 if "source_documents" in message:
                     with st.expander("🔍 回答の根拠となったテキスト"):
                         seen_urls = set()
                         for doc in message["source_documents"]:
-                            video_url = doc.metadata.get("url", "#")
+                            # 辞書形式かDocumentオブジェクトかで分岐
+                            if isinstance(doc, dict):
+                                meta = doc.get("metadata", {})
+                                content = doc.get("page_content", "")
+                            else:
+                                meta = doc.metadata
+                                content = doc.page_content
+
+                            video_url = meta.get("url", "#")
                             if video_url in seen_urls:
                                 continue
                             seen_urls.add(video_url)
                             
-                            video_title = doc.metadata.get("source_video", "不明なソース")
+                            video_title = meta.get("source_video", "不明なソース")
                             st.write(f"**参照元:** [{video_title}]({video_url})")
-                            st.write(f"> {doc.page_content}")
+                            st.write(f"> {content}")
 
     if query := st.chat_input("💬 函館の街歩きに基づいて質問してみてください"):
         st.session_state.messages.append({"role": "user", "content": query})
@@ -367,13 +396,15 @@ else:
         with st.chat_message("assistant"):
             with st.spinner("考え中..."):
                 
+                # 会話履歴をLangChain形式に変換
                 chat_history_objs = []
                 for msg in st.session_state.messages[:-1]:
                     if msg["role"] == "user":
-                        chat_history_objs.append(HumanMessage(content=msg["content"]))
+                        chat_history.append((msg["content"], ""))
                     elif msg["role"] == "assistant":
                         chat_history_objs.append(AIMessage(content=msg["content"]))
 
+                # ▼▼▼ チェーンの実行 ▼▼▼
                 result = rag_chain.invoke({
                     "input": query,
                     "chat_history": chat_history_objs
@@ -398,6 +429,7 @@ else:
                         st.write(doc.page_content)
                         st.write(f"**参照元:** [{video_title}]({video_url})")
 
+                # 履歴保存
                 st.session_state.messages.append({
                     "role": "assistant", 
                     "content": response,
