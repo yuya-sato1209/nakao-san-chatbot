@@ -160,7 +160,7 @@ def setup_retrievers(_raw_data):
     try:
         ensemble_retriever = SimpleEnsembleRetriever(
             retrievers=[bm25_retriever, faiss_retriever],
-            weights=[0.3, 0.7],
+            weights=[0.5, 0.5],
             k=4 # 合計4件取得
         )
         return ensemble_retriever
